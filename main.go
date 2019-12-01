@@ -62,13 +62,19 @@ func main() {
 			rectangles = append(rectangles, r)
 		}
 	}
-	images := []gocv.Mat{origImg, blurred, thresholded, dilated}
+
+	final := gocv.NewMat()
+	defer final.Close()
+
+	gocv.CopyMakeBorder(origImg, &final, 0, 0, 0, 0, gocv.BorderConstant, blue)
+	for _, r := range rectangles {
+		gocv.Rectangle(&final, r, blue, 3)
+	}
+
+	images := []gocv.Mat{origImg, blurred, thresholded, dilated, final}
 	i := 0
 	for {
 		toDraw := images[i%len(images)]
-		for _, r := range rectangles {
-			gocv.Rectangle(&toDraw, r, blue, 3)
-		}
 		window.IMShow(toDraw)
 		if window.WaitKey(1000) == 27 {
 			break
