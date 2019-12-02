@@ -29,8 +29,8 @@ func main() {
 
 	dilated := gocv.NewMat()
 	defer dilated.Close()
-	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 6, Y: 1})
-	dilationKernalTall := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 5, Y: 3})
+	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 5, Y: 1})
+	dilationKernalTall := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 5, Y: 2})
 	src, dst := &thresholded, &dilated
 
 	newSrc := gocv.NewMat()
