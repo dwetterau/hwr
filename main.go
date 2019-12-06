@@ -3,6 +3,9 @@ package main
 import (
 	"image"
 	"image/color"
+	"sort"
+
+	"github.com/google/uuid"
 
 	"gocv.io/x/gocv"
 )
@@ -127,15 +130,141 @@ type chunkStruct struct {
 	histogram  []int
 	peaks      []peakStruct
 	valleys    []*valleyStruct
+
+	avgHeight, avgWhiteHeight int
+	linesCount                int
 }
 
 // Returns the average height of something?
 func (c *chunkStruct) findPeaksAndValleys(idToValley map[string]*valleyStruct) int {
-	return 0
+	c.calculateHistogram()
+
+	for i := 1; i < len(c.histogram)-1; i++ {
+		leftVal := c.histogram[i-1]
+		centerVal := c.histogram[i]
+		rightVal := c.histogram[i+1]
+
+		// See if we're looking at a peak
+		if centerVal >= leftVal && centerVal >= rightVal {
+			if len(c.peaks) > 0 {
+				last := c.peaks[len(c.peaks)-1]
+				if (i-last.position) <= c.avgHeight/2 && centerVal >= last.value {
+					c.peaks[len(c.peaks)-1].position = i
+					c.peaks[len(c.peaks)-1].value = centerVal
+				} else if (i-last.position) <= c.avgHeight/2 && centerVal < last.value {
+					// Pretend it's not a peak
+				} else {
+					c.peaks = append(c.peaks, peakStruct{position: i, value: centerVal})
+				}
+			} else {
+				c.peaks = append(c.peaks, peakStruct{position: i, value: centerVal})
+			}
+		}
+	}
+
+	peaksAverageValues := 0
+	for _, p := range c.peaks {
+		peaksAverageValues += p.value
+	}
+	if len(c.peaks) > 0 {
+		peaksAverageValues /= len(c.peaks)
+	}
+	newPeaks := make([]peakStruct, 0, len(c.peaks))
+	for _, p := range c.peaks {
+		if p.value >= peaksAverageValues/4 {
+			newPeaks = append(newPeaks, p)
+		}
+	}
+	c.linesCount = len(newPeaks)
+	c.peaks = newPeaks
+
+	sort.Slice(c.peaks, func(i, j int) bool {
+		return c.peaks[i].position < c.peaks[j].position
+	})
+
+	for i := 1; i < len(c.peaks); i++ {
+		minPosition := (c.peaks[i-1].position + c.peaks[i].position) / 2
+		minValue := c.histogram[minPosition]
+
+		for j := c.peaks[i-1].position + c.avgHeight/2; j < c.peaks[i].position-c.avgHeight-30; j++ {
+			valleyBlackCount := 0
+			for l := 0; l < c.mat.Cols(); l++ {
+				if c.mat.GetUCharAt(j, l) == 0 {
+					valleyBlackCount++
+				}
+			}
+
+			if minValue != 0 && valleyBlackCount <= minValue {
+				minValue = valleyBlackCount
+				minPosition = j
+			}
+		}
+
+		v := &valleyStruct{
+			id:         uuid.New().String(),
+			chunkIndex: c.index,
+			position:   minPosition,
+		}
+		c.valleys = append(c.valleys, v)
+		idToValley[v.id] = v
+	}
+	return c.avgHeight
 }
 
 func (c *chunkStruct) calculateHistogram() {
-	// todo
+	c.histogram = make([]int, c.mat.Cols())
+	c.linesCount, c.avgHeight, c.avgWhiteHeight = 0, 0, 0
+
+	blackCount, currentHeight, currentWhiteCount, whiteLinesCount := 0, 0, 0, 0
+	var whiteSpaces []int
+
+	for i := 0; i < c.mat.Rows(); i++ {
+		blackCount = 0
+		for j := 0; j < c.mat.Cols(); j++ {
+			if c.mat.GetUCharAt(i, j) == 0 {
+				blackCount++
+				c.histogram[i]++
+			}
+		}
+		if blackCount > 0 {
+			currentHeight++
+			if currentWhiteCount > 0 {
+				whiteSpaces = append(whiteSpaces, currentWhiteCount)
+				currentWhiteCount = 0
+			}
+		} else {
+			currentWhiteCount++
+			if currentHeight > 0 {
+				c.linesCount++
+				c.avgHeight += currentHeight
+				currentHeight = 0
+			}
+		}
+	}
+
+	sort.Slice(whiteSpaces, func(i, j int) bool {
+		return whiteSpaces[i] < whiteSpaces[j]
+	})
+	for _, space := range whiteSpaces {
+		// Why 4? Idk
+		if space > 4*c.avgHeight {
+			break
+		}
+		c.avgWhiteHeight += space
+		whiteLinesCount++
+	}
+	if whiteLinesCount > 0 {
+		c.avgWhiteHeight /= whiteLinesCount
+	}
+	if c.linesCount > 0 {
+		c.avgHeight /= c.linesCount
+	}
+
+	// Some basic average height logic?
+	c.avgHeight += int(float64(c.avgHeight) / 2.0)
+	if c.avgHeight < 30 {
+		c.avgHeight = 30
+	}
 }
 
 type valleyStruct struct {
@@ -163,8 +292,9 @@ type lineStruct struct {
 }
 
 func newLine(initialValleyID string) *lineStruct {
-	// todo?
-	return nil
+	return &lineStruct{
+		valleyIDs: []string{initialValleyID},
+	}
 }
 
 func (l *lineStruct) generateInitialPoints(
