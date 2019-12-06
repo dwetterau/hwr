@@ -100,7 +100,7 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 
 	// Generate chunks
 	allChunks := generateChunks(origImage)
-	toOutput := []gocv.Mat{} //origImage}
+	toOutput := []gocv.Mat{origImage}
 	for _, c := range allChunks {
 		toOutput = append(toOutput, c.mat)
 	}
@@ -119,19 +119,94 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 	return toOutput
 }
 
-type chunk struct {
+type chunkStruct struct {
 	index      int
 	startPixel int
 	chunkWidth int
 	mat        gocv.Mat
+	histogram  []int
+	peaks      []peakStruct
+	valleys    []*valleyStruct
 }
 
-func generateChunks(origImage gocv.Mat) []chunk {
+// Returns the average height of something?
+func (c *chunkStruct) findPeaksAndValleys(idToValley map[string]*valleyStruct) int {
+	return 0
+}
+
+func (c *chunkStruct) calculateHistogram() {
+	// todo
+}
+
+type valleyStruct struct {
+	id         string
+	chunkIndex int
+	position   int
+	used       bool
+	line       *lineStruct
+}
+
+func (v *valleyStruct) isSame(v2 *valleyStruct) bool {
+	return v.id == v2.id
+}
+
+type peakStruct struct {
+	position int
+	value    int
+}
+
+type lineStruct struct {
+	above, below                   *regionStruct
+	valleyIDs                      []string
+	minRowPosition, maxRowPosition int
+	points                         []image.Point
+}
+
+func newLine(initialValleyID string) *lineStruct {
+	// todo?
+	return nil
+}
+
+func (l *lineStruct) generateInitialPoints(
+	chunkWidth int,
+	imageWidth int,
+	idToValley map[string]*valleyStruct,
+) {
+	// todo
+}
+
+type regionStruct struct {
+	region      gocv.Mat
+	top, bottom *lineStruct
+	height      int
+	rowOffset   int
+	covariance  gocv.Mat
+	mean        []float32
+}
+
+func (r *regionStruct) updateRegion(img *gocv.Mat, something int) {
+	// TODO
+}
+
+func (r *regionStruct) calculateMean() {
+	// TODO
+}
+
+func (r *regionStruct) calculateCovariance() {
+	// TODO
+}
+
+func (r *regionStruct) biVariateGaussianDensity(point image.Point) float64 {
+	// TODO
+	return 0
+}
+
+func generateChunks(origImage gocv.Mat) []chunkStruct {
 	width := origImage.Cols() / totalChunks
 
-	chunks := make([]chunk, totalChunks)
+	chunks := make([]chunkStruct, totalChunks)
 	for i, startPixel := 0, 0; i < totalChunks; i++ {
-		chunks[i] = chunk{
+		chunks[i] = chunkStruct{
 			index:      i,
 			startPixel: startPixel,
 			chunkWidth: width,
@@ -140,4 +215,26 @@ func generateChunks(origImage gocv.Mat) []chunk {
 		startPixel += width
 	}
 	return chunks
+}
+
+// Returns predicted line height and the initial lines
+func getInitialLines(chunks []chunkStruct, idToValleys map[string]*valleyStruct) (int, []lineStruct) {
+	lines := make([]lineStruct, 0, len(chunks))
+	numberOfHeights, valleysMinAbsoluteDistance := 0, 0
+	for _, c := range chunks {
+		averageHeight := c.findPeaksAndValleys(idToValleys)
+		if averageHeight > 0 {
+			numberOfHeights++
+		}
+		valleysMinAbsoluteDistance += averageHeight
+	}
+	valleysMinAbsoluteDistance /= numberOfHeights
+
+	for i := len(chunks) - 1; i >= 0; i-- {
+		for range chunks[i].valleys {
+			// tODO: Claim a valley if unclaimed, then make a new line if there's more than one valley??
+		}
+	}
+
+	return valleysMinAbsoluteDistance, lines
 }
