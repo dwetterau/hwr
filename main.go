@@ -18,17 +18,30 @@ func main() {
 	if origImg.Empty() {
 		panic("didn't load image")
 	}
+	//images := detectWords(origImg)
+	images := segmentLines(origImg)
+	i := 0
+	for {
+		toDraw := images[i%len(images)]
+		window.IMShow(toDraw)
+		if window.WaitKey(1000) == 27 {
+			break
+		}
+		i++
+	}
+	for _, i := range images {
+		_ = i.Close()
+	}
+}
+
+func detectWords(origImg gocv.Mat) []gocv.Mat {
 	blurred := gocv.NewMat()
-	defer blurred.Close()
 	gocv.Blur(origImg, &blurred, image.Point{X: 5, Y: 5})
 
 	thresholded := gocv.NewMat()
-	defer thresholded.Close()
-
 	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 11, 15)
 
 	dilated := gocv.NewMat()
-	defer dilated.Close()
 	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 5, Y: 1})
 	dilationKernalTall := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 5, Y: 2})
 	src, dst := &thresholded, &dilated
@@ -64,21 +77,67 @@ func main() {
 	}
 
 	final := gocv.NewMat()
-	defer final.Close()
 
 	gocv.CopyMakeBorder(origImg, &final, 0, 0, 0, 0, gocv.BorderConstant, blue)
 	for _, r := range rectangles {
 		gocv.Rectangle(&final, r, blue, 3)
 	}
 
-	images := []gocv.Mat{origImg, blurred, thresholded, dilated, final}
-	i := 0
-	for {
-		toDraw := images[i%len(images)]
-		window.IMShow(toDraw)
-		if window.WaitKey(1000) == 27 {
-			break
-		}
-		i++
+	return []gocv.Mat{origImg, blurred, thresholded, dilated, final}
+}
+
+const (
+	totalChunks = 20
+)
+
+// Heavily inspired by: https://github.com/arthurflor23/text-segmentation/blob/master/src/imgproc/cpp/LineSegmentation.cpp
+func segmentLines(origImage gocv.Mat) []gocv.Mat {
+	//
+	// Steps:
+	// Get contours?
+	// I think this is just finding a binding box for the area with text. I think we already have this from the original
+	// scan.
+
+	// Generate chunks
+	allChunks := generateChunks(origImage)
+	toOutput := []gocv.Mat{} //origImage}
+	for _, c := range allChunks {
+		toOutput = append(toOutput, c.mat)
 	}
+
+	// Get the initial lines
+
+	// Generate regions
+
+	// Repair Lines
+
+	// Generate regions (2)
+
+	// Print lines
+
+	// Get regions
+	return toOutput
+}
+
+type chunk struct {
+	index      int
+	startPixel int
+	chunkWidth int
+	mat        gocv.Mat
+}
+
+func generateChunks(origImage gocv.Mat) []chunk {
+	width := origImage.Cols() / totalChunks
+
+	chunks := make([]chunk, totalChunks)
+	for i, startPixel := 0, 0; i < totalChunks; i++ {
+		chunks[i] = chunk{
+			index:      i,
+			startPixel: startPixel,
+			chunkWidth: width,
+			mat:        origImage.Region(image.Rect(startPixel, 0, startPixel+width, origImage.Rows())),
+		}
+		startPixel += width
+	}
+	return chunks
 }
