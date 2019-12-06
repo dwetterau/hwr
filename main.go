@@ -1,11 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"image"
 	"image/color"
+	"math"
 	"sort"
-
-	"github.com/google/uuid"
 
 	"gocv.io/x/gocv"
 )
@@ -90,8 +90,12 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 }
 
 const (
-	totalChunks = 20
+	totalChunks = 50
 )
+
+type valleyID int
+
+var valleyIDCounter = valleyID(0)
 
 // Heavily inspired by: https://github.com/arthurflor23/text-segmentation/blob/master/src/imgproc/cpp/LineSegmentation.cpp
 func segmentLines(origImage gocv.Mat) []gocv.Mat {
@@ -103,12 +107,11 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 
 	// Generate chunks
 	allChunks := generateChunks(origImage)
-	toOutput := []gocv.Mat{origImage}
-	for _, c := range allChunks {
-		toOutput = append(toOutput, c.mat)
-	}
 
 	// Get the initial lines
+	idToValleys := make(map[valleyID]*valleyStruct, 50)
+	predictedLineHeight, lines := getInitialLines(allChunks, idToValleys)
+	fmt.Println(predictedLineHeight)
 
 	// Generate regions
 
@@ -116,9 +119,12 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 
 	// Generate regions (2)
 
-	// Print lines
+	// Render lines
 
 	// Get regions
+
+	toOutput := []gocv.Mat{origImage, origImage.Clone()}
+	renderLines(toOutput[1], lines)
 	return toOutput
 }
 
@@ -129,14 +135,13 @@ type chunkStruct struct {
 	mat        gocv.Mat
 	histogram  []int
 	peaks      []peakStruct
-	valleys    []*valleyStruct
+	valleyIDs  []valleyID
 
 	avgHeight, avgWhiteHeight int
 	linesCount                int
 }
 
-// Returns the average height of something?
-func (c *chunkStruct) findPeaksAndValleys(idToValley map[string]*valleyStruct) int {
+func (c *chunkStruct) findPeaksAndValleys(idToValley map[valleyID]*valleyStruct) {
 	c.calculateHistogram()
 
 	for i := 1; i < len(c.histogram)-1; i++ {
@@ -201,18 +206,18 @@ func (c *chunkStruct) findPeaksAndValleys(idToValley map[string]*valleyStruct) i
 		}
 
 		v := &valleyStruct{
-			id:         uuid.New().String(),
+			id:         valleyIDCounter,
 			chunkIndex: c.index,
 			position:   minPosition,
 		}
-		c.valleys = append(c.valleys, v)
+		valleyIDCounter++
+		c.valleyIDs = append(c.valleyIDs, v.id)
 		idToValley[v.id] = v
 	}
-	return c.avgHeight
 }
 
 func (c *chunkStruct) calculateHistogram() {
-	c.histogram = make([]int, c.mat.Cols())
+	c.histogram = make([]int, c.mat.Rows())
 	c.linesCount, c.avgHeight, c.avgWhiteHeight = 0, 0, 0
 
 	blackCount, currentHeight, currentWhiteCount, whiteLinesCount := 0, 0, 0, 0
@@ -268,7 +273,7 @@ func (c *chunkStruct) calculateHistogram() {
 }
 
 type valleyStruct struct {
-	id         string
+	id         valleyID
 	chunkIndex int
 	position   int
 	used       bool
@@ -286,23 +291,75 @@ type peakStruct struct {
 
 type lineStruct struct {
 	above, below                   *regionStruct
-	valleyIDs                      []string
+	valleyIDs                      []valleyID
 	minRowPosition, maxRowPosition int
 	points                         []image.Point
-}
-
-func newLine(initialValleyID string) *lineStruct {
-	return &lineStruct{
-		valleyIDs: []string{initialValleyID},
-	}
 }
 
 func (l *lineStruct) generateInitialPoints(
 	chunkWidth int,
 	imageWidth int,
-	idToValley map[string]*valleyStruct,
+	idToValley map[valleyID]*valleyStruct,
 ) {
-	// todo
+	c, previousRow := 0, 0
+	sort.Slice(l.valleyIDs, func(i, j int) bool {
+		return l.valleyIDs[i] < l.valleyIDs[j]
+	})
+
+	firstV := idToValley[l.valleyIDs[0]]
+	if firstV.chunkIndex > 0 {
+		previousRow = firstV.position
+		l.maxRowPosition = previousRow
+		l.minRowPosition = previousRow
+
+		for j := 0; j < firstV.chunkIndex*chunkWidth; j++ {
+			if c == j {
+				l.points = append(l.points, image.Point{X: previousRow, Y: j})
+			}
+			c++
+		}
+	}
+
+	for _, vid := range l.valleyIDs {
+		chunkIndex := idToValley[vid].chunkIndex
+		chunkRow := idToValley[vid].position
+		chunkStartColumn := chunkIndex * chunkWidth
+
+		for j := chunkStartColumn; j < chunkStartColumn+chunkWidth; j++ {
+			if chunkRow < l.minRowPosition {
+				l.minRowPosition = chunkRow
+			}
+			if chunkRow > l.maxRowPosition {
+				l.maxRowPosition = chunkRow
+			}
+			if c == j {
+				l.points = append(l.points, image.Point{X: chunkRow, Y: j})
+			}
+			c++
+		}
+		if previousRow != chunkRow {
+			previousRow = chunkRow
+			if chunkRow < l.minRowPosition {
+				l.minRowPosition = chunkRow
+			}
+			if chunkRow > l.maxRowPosition {
+				l.maxRowPosition = chunkRow
+			}
+		}
+	}
+
+	lastValley := idToValley[l.valleyIDs[len(l.valleyIDs)-1]]
+	if totalChunks-1 > lastValley.chunkIndex {
+		chunkIndex := lastValley.chunkIndex
+		chunkRow := lastValley.position
+
+		for j := chunkIndex*chunkWidth + chunkWidth; j < imageWidth; j++ {
+			if c == j {
+				l.points = append(l.points, image.Point{X: chunkRow, Y: j})
+			}
+			c++
+		}
+	}
 }
 
 type regionStruct struct {
@@ -331,12 +388,12 @@ func (r *regionStruct) biVariateGaussianDensity(point image.Point) float64 {
 	return 0
 }
 
-func generateChunks(origImage gocv.Mat) []chunkStruct {
+func generateChunks(origImage gocv.Mat) []*chunkStruct {
 	width := origImage.Cols() / totalChunks
 
-	chunks := make([]chunkStruct, totalChunks)
+	chunks := make([]*chunkStruct, totalChunks)
 	for i, startPixel := 0, 0; i < totalChunks; i++ {
-		chunks[i] = chunkStruct{
+		chunks[i] = &chunkStruct{
 			index:      i,
 			startPixel: startPixel,
 			chunkWidth: width,
@@ -348,23 +405,100 @@ func generateChunks(origImage gocv.Mat) []chunkStruct {
 }
 
 // Returns predicted line height and the initial lines
-func getInitialLines(chunks []chunkStruct, idToValleys map[string]*valleyStruct) (int, []lineStruct) {
-	lines := make([]lineStruct, 0, len(chunks))
+func getInitialLines(chunks []*chunkStruct, idToValleys map[valleyID]*valleyStruct) (int, []*lineStruct) {
+	lines := make([]*lineStruct, 0, len(chunks))
 	numberOfHeights, valleysMinAbsoluteDistance := 0, 0
 	for _, c := range chunks {
-		averageHeight := c.findPeaksAndValleys(idToValleys)
-		if averageHeight > 0 {
+		c.findPeaksAndValleys(idToValleys)
+		if c.avgHeight > 0 {
 			numberOfHeights++
 		}
-		valleysMinAbsoluteDistance += averageHeight
+		valleysMinAbsoluteDistance += c.avgHeight
 	}
 	valleysMinAbsoluteDistance /= numberOfHeights
 
 	for i := len(chunks) - 1; i >= 0; i-- {
-		for range chunks[i].valleys {
-			// tODO: Claim a valley if unclaimed, then make a new line if there's more than one valley??
+		for _, vid := range chunks[i].valleyIDs {
+			v := idToValleys[vid]
+			if v.used {
+				continue
+			}
+			v.used = true
+			l := &lineStruct{
+				valleyIDs: []valleyID{vid},
+			}
+			connectValleys(chunks, idToValleys, i-1, vid, l, valleysMinAbsoluteDistance)
+			l.generateInitialPoints(chunks[i].chunkWidth, chunks[i].mat.Cols(), idToValleys)
+
+			if len(l.valleyIDs) > 0 {
+				lines = append(lines, l)
+			}
 		}
 	}
 
 	return valleysMinAbsoluteDistance, lines
+}
+
+func connectValleys(
+	chunks []*chunkStruct,
+	idToValleys map[valleyID]*valleyStruct,
+	i int,
+	current valleyID,
+	l *lineStruct,
+	valleysMinAbsoluteDistance int,
+) {
+	if i <= 0 || len(chunks[i].valleyIDs) == 0 {
+		return
+	}
+
+	currentValley := idToValleys[current]
+	connectedTo := -1
+	minDistance := math.MaxInt64
+	for j := 0; j < len(chunks[i].valleyIDs); j++ {
+		vid := chunks[i].valleyIDs[j]
+		v := idToValleys[vid]
+		if v.used {
+			continue
+		}
+
+		dist := v.position - currentValley.position
+		if dist < 0 {
+			dist = -dist
+		}
+		if minDistance > dist && dist <= valleysMinAbsoluteDistance {
+			minDistance = dist
+			connectedTo = j
+		}
+	}
+	if connectedTo == -1 {
+		return
+	}
+
+	newV := idToValleys[chunks[i].valleyIDs[connectedTo]]
+	l.valleyIDs = append(l.valleyIDs, newV.id)
+	newV.used = true
+	connectValleys(chunks, idToValleys, i-1, newV.id, l, valleysMinAbsoluteDistance)
+}
+
+func renderLines(mat gocv.Mat, lines []*lineStruct) {
+	for _, l := range lines {
+		lastRow := -1
+		for _, p := range l.points {
+			mat.SetUCharAt(p.X, p.Y, 255)
+			if lastRow != -1 && p.X != lastRow {
+				min := p.X
+				if lastRow < min {
+					min = lastRow
+				}
+				max := p.X
+				if lastRow > max {
+					max = lastRow
+				}
+				for i := min; i < max; i++ {
+					mat.SetUCharAt(i, p.Y, 255)
+				}
+			}
+			lastRow = p.X
+		}
+	}
 }
