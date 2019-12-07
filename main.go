@@ -90,7 +90,11 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 }
 
 const (
-	totalChunks = 50
+	totalChunks  = 20
+	valleyFactor = 4
+	// I think this should be < width / totalChunks
+	minAvgHeight   = 30
+	blackThreshold = 0
 )
 
 type valleyID int
@@ -99,26 +103,31 @@ var valleyIDCounter = valleyID(0)
 
 // Heavily inspired by: https://github.com/arthurflor23/text-segmentation/blob/master/src/imgproc/cpp/LineSegmentation.cpp
 func segmentLines(origImage gocv.Mat) []gocv.Mat {
+	toOutput := []gocv.Mat{origImage}
 	//
 	// Steps:
-	// Get contours?
-	// I think this is just finding a binding box for the area with text. I think we already have this from the original
-	// scan.
+	// Make it black or white
+	blurred := gocv.NewMat()
+	gocv.Blur(origImage, &blurred, image.Point{X: 5, Y: 5})
+	toOutput = append(toOutput, blurred)
+
+	thresholded := gocv.NewMat()
+	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinary, 11, 10)
+	toOutput = append(toOutput, thresholded)
 
 	// Generate chunks
-	allChunks := generateChunks(origImage)
+	allChunks := generateChunks(thresholded)
 
 	// Get the initial lines
 	idToValleys := make(map[valleyID]*valleyStruct, 50)
-	predictedLineHeight, lines := getInitialLines(origImage, allChunks, idToValleys)
+	predictedLineHeight, lines := getInitialLines(thresholded, allChunks, idToValleys)
 
-	toOutput := []gocv.Mat{origImage}
 	toOutput = append(toOutput, origImage.Clone())
 	renderLines(toOutput[len(toOutput)-1], lines)
 
 	if len(lines) > 0 {
 		// Generate regions
-		regions, _ := generateRegions(origImage, lines, predictedLineHeight)
+		regions, _ := generateRegions(thresholded, lines, predictedLineHeight)
 		for range regions {
 			//toOutput = append(toOutput, r.region)
 		}
@@ -183,7 +192,7 @@ func (c *chunkStruct) findPeaksAndValleys(idToValley map[valleyID]*valleyStruct)
 	}
 	newPeaks := make([]peakStruct, 0, len(c.peaks))
 	for _, p := range c.peaks {
-		if p.value >= peaksAverageValues/4 {
+		if p.value >= peaksAverageValues/valleyFactor {
 			newPeaks = append(newPeaks, p)
 		}
 	}
@@ -191,14 +200,14 @@ func (c *chunkStruct) findPeaksAndValleys(idToValley map[valleyID]*valleyStruct)
 	c.peaks = newPeaks
 
 	sort.Slice(c.peaks, func(i, j int) bool {
-		return c.peaks[i].position < c.peaks[j].position
+		return c.peaks[i].position > c.peaks[j].position
 	})
 
 	for i := 1; i < len(c.peaks); i++ {
 		minPosition := (c.peaks[i-1].position + c.peaks[i].position) / 2
 		minValue := c.histogram[minPosition]
 
-		for j := c.peaks[i-1].position + c.avgHeight/2; j < c.peaks[i].position-c.avgHeight-30; j++ {
+		for j := c.peaks[i-1].position + c.avgHeight/2; j < c.peaks[i].position-c.avgHeight-minAvgHeight; j++ {
 			valleyBlackCount := 0
 			for l := 0; l < c.mat.Cols(); l++ {
 				if c.mat.GetUCharAt(j, l) == 0 {
@@ -233,7 +242,7 @@ func (c *chunkStruct) calculateHistogram() {
 	for i := 0; i < c.mat.Rows(); i++ {
 		blackCount = 0
 		for j := 0; j < c.mat.Cols(); j++ {
-			if c.mat.GetUCharAt(i, j) == 0 {
+			if c.mat.GetUCharAt(i, j) <= blackThreshold {
 				blackCount++
 				c.histogram[i]++
 			}
@@ -258,8 +267,7 @@ func (c *chunkStruct) calculateHistogram() {
 		return whiteSpaces[i] < whiteSpaces[j]
 	})
 	for _, space := range whiteSpaces {
-		// Why 4? Idk
-		if space > 4*c.avgHeight {
+		if space > valleyFactor*c.avgHeight {
 			break
 		}
 		c.avgWhiteHeight += space
@@ -272,10 +280,9 @@ func (c *chunkStruct) calculateHistogram() {
 		c.avgHeight /= c.linesCount
 	}
 
-	// Some basic average height logic?
 	c.avgHeight += int(float64(c.avgHeight) / 2.0)
-	if c.avgHeight < 30 {
-		c.avgHeight = 30
+	if c.avgHeight < minAvgHeight {
+		c.avgHeight = minAvgHeight
 	}
 }
 
@@ -552,14 +559,14 @@ func connectValleys(
 	currentValley := idToValleys[current]
 	connectedTo := -1
 	minDistance := math.MaxInt64
-	for j := 0; j < len(chunks[i].valleyIDs); j++ {
+	for j := range chunks[i].valleyIDs {
 		vid := chunks[i].valleyIDs[j]
 		v := idToValleys[vid]
 		if v.used {
 			continue
 		}
 
-		dist := v.position - currentValley.position
+		dist := currentValley.position - v.position
 		if dist < 0 {
 			dist = -dist
 		}
