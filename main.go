@@ -12,11 +12,11 @@ import (
 
 func main() {
 	// open display window
-	window := gocv.NewWindow("HRR")
+	window := gocv.NewWindow("HWR")
 	defer window.Close()
 
 	// prepare image matrix
-	origImg := gocv.IMRead("/home/david/Dropbox/Journal/2019-07-25.jpg", gocv.IMReadGrayScale)
+	origImg := gocv.IMRead("/Users/davidw/Dropbox/Journal/2019-07-25.jpg", gocv.IMReadGrayScale)
 	defer origImg.Close()
 	if origImg.Empty() {
 		panic("didn't load image")
@@ -110,8 +110,7 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 
 	// Get the initial lines
 	idToValleys := make(map[valleyID]*valleyStruct, 50)
-	predictedLineHeight, lines := getInitialLines(allChunks, idToValleys)
-	fmt.Println(predictedLineHeight)
+	predictedLineHeight, lines := getInitialLines(origImage, allChunks, idToValleys)
 
 	toOutput := []gocv.Mat{origImage}
 	toOutput = append(toOutput, origImage.Clone())
@@ -119,6 +118,10 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 
 	if len(lines) > 0 {
 		// Generate regions
+		regions, _ := generateRegions(origImage, lines, predictedLineHeight)
+		for range regions {
+			//toOutput = append(toOutput, r.region)
+		}
 
 		// Repair Lines
 
@@ -129,7 +132,6 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 		// Get regions
 	}
 
-	renderLines(toOutput[1], lines)
 	return toOutput
 }
 
@@ -329,14 +331,14 @@ func (l *lineStruct) generateInitialPoints(
 		chunkIndex := idToValley[vid].chunkIndex
 		chunkRow := idToValley[vid].position
 		chunkStartColumn := chunkIndex * chunkWidth
+		if chunkRow < l.minRowPosition {
+			l.minRowPosition = chunkRow
+		}
+		if chunkRow > l.maxRowPosition {
+			l.maxRowPosition = chunkRow
+		}
 
 		for j := chunkStartColumn; j < chunkStartColumn+chunkWidth; j++ {
-			if chunkRow < l.minRowPosition {
-				l.minRowPosition = chunkRow
-			}
-			if chunkRow > l.maxRowPosition {
-				l.maxRowPosition = chunkRow
-			}
 			if c == j {
 				l.points = append(l.points, image.Point{X: chunkRow, Y: j})
 			}
@@ -344,17 +346,11 @@ func (l *lineStruct) generateInitialPoints(
 		}
 		if previousRow != chunkRow {
 			previousRow = chunkRow
-			if chunkRow < l.minRowPosition {
-				l.minRowPosition = chunkRow
-			}
-			if chunkRow > l.maxRowPosition {
-				l.maxRowPosition = chunkRow
-			}
 		}
 	}
 
 	lastValley := idToValley[l.valleyIDs[len(l.valleyIDs)-1]]
-	if totalChunks-1 > lastValley.chunkIndex {
+	if totalChunks-1 >= lastValley.chunkIndex {
 		chunkIndex := lastValley.chunkIndex
 		chunkRow := lastValley.position
 
@@ -400,7 +396,7 @@ func (r *regionStruct) updateRegion(img gocv.Mat, regionIndex int) bool {
 	}
 
 	regionTotalRows := end - start
-	region := gocv.NewMatWithSize(regionTotalRows, img.Cols(), gocv.MatTypeCV8U)
+	r.region = gocv.NewMatWithSize(regionTotalRows, img.Cols(), gocv.MatTypeCV8U)
 	nonzero := 0
 	for c := 0; c < img.Cols(); c++ {
 		start := 0
@@ -409,10 +405,13 @@ func (r *regionStruct) updateRegion(img gocv.Mat, regionIndex int) bool {
 		}
 		end := img.Rows() - 1
 		if r.bottom != nil {
+			if c >= len(r.bottom.points) {
+				panic(fmt.Sprint(c, r.bottom.points))
+			}
 			end = r.bottom.points[c].Y
 		}
-		for r := 0; r < regionTotalRows; r++ {
-			origRow := r + minRegionRow
+		for row := 0; row < regionTotalRows; row++ {
+			origRow := row + minRegionRow
 			val := uint8(255)
 			if origRow >= start && origRow < end {
 				val = img.GetUCharAt(origRow, c)
@@ -420,12 +419,12 @@ func (r *regionStruct) updateRegion(img gocv.Mat, regionIndex int) bool {
 			if val != 0 {
 				nonzero++
 			}
-			region.SetUCharAt(r, c, val)
+			r.region.SetUCharAt(row, c, val)
 		}
 	}
 	r.calculateMean()
 	r.calculateCovariance()
-	return nonzero == region.Cols()*region.Rows()
+	return nonzero == r.region.Cols()*r.region.Rows()
 }
 
 func (r *regionStruct) calculateMean() {
@@ -449,6 +448,7 @@ func (r *regionStruct) calculateMean() {
 			n++
 		}
 	}
+	r.mean = mean
 }
 
 func (r *regionStruct) calculateCovariance() {
@@ -503,7 +503,7 @@ func generateChunks(origImage gocv.Mat) []*chunkStruct {
 }
 
 // Returns predicted line height and the initial lines
-func getInitialLines(chunks []*chunkStruct, idToValleys map[valleyID]*valleyStruct) (int, []*lineStruct) {
+func getInitialLines(origImage gocv.Mat, chunks []*chunkStruct, idToValleys map[valleyID]*valleyStruct) (int, []*lineStruct) {
 	lines := make([]*lineStruct, 0, len(chunks))
 	numberOfHeights, valleysMinAbsoluteDistance := 0, 0
 	for _, c := range chunks {
@@ -526,9 +526,9 @@ func getInitialLines(chunks []*chunkStruct, idToValleys map[valleyID]*valleyStru
 				valleyIDs: []valleyID{vid},
 			}
 			connectValleys(chunks, idToValleys, i-1, vid, l, valleysMinAbsoluteDistance)
-			l.generateInitialPoints(chunks[i].chunkWidth, chunks[i].mat.Cols(), idToValleys)
+			l.generateInitialPoints(chunks[i].chunkWidth, origImage.Cols(), idToValleys)
 
-			if len(l.valleyIDs) > 0 {
+			if len(l.valleyIDs) > 1 {
 				lines = append(lines, l)
 			}
 		}
@@ -614,7 +614,7 @@ func generateRegions(
 	r := &regionStruct{bottom: lines[0]}
 	r.updateRegion(origImage, 0)
 
-	lines[0].above = lineRegions[0]
+	lines[0].above = r
 	lineRegions = append(lineRegions, r)
 
 	regionMaxHeight := int(float64(predictedLineHeight) * 2.5)
