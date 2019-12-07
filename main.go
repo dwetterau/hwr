@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -128,8 +127,8 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 	if len(lines) > 0 {
 		// Generate regions
 		regions, _ := generateRegions(thresholded, lines, predictedLineHeight)
-		for range regions {
-			//toOutput = append(toOutput, r.region)
+		for _, r := range regions {
+			toOutput = append(toOutput, r.region)
 		}
 
 		// Repair Lines
@@ -412,10 +411,10 @@ func (r *regionStruct) updateRegion(img gocv.Mat, regionIndex int) bool {
 		}
 		end := img.Rows() - 1
 		if r.bottom != nil {
-			if c >= len(r.bottom.points) {
-				panic(fmt.Sprint(c, r.bottom.points))
-			}
-			end = r.bottom.points[c].Y
+			end = r.bottom.points[c].X
+		}
+		if end-start > r.height {
+			r.height = end - start
 		}
 		for row := 0; row < regionTotalRows; row++ {
 			origRow := row + minRegionRow
@@ -626,8 +625,11 @@ func generateRegions(
 
 	regionMaxHeight := int(float64(predictedLineHeight) * 2.5)
 	averageLineHeight := 0
+	toExclude := 0
 	if r.height < regionMaxHeight {
 		averageLineHeight += r.height
+	} else {
+		toExclude++
 	}
 
 	for i := range lines {
@@ -638,20 +640,21 @@ func generateRegions(
 		}
 
 		r := &regionStruct{top: topLine, bottom: bottomLine}
-		res := r.updateRegion(origImage, i)
+		isTrivial := r.updateRegion(origImage, i)
 		topLine.below = r
 		if bottomLine != nil {
 			bottomLine.above = r
 		}
-		if !res {
+		if !isTrivial {
 			lineRegions = append(lineRegions, r)
 			if r.height < regionMaxHeight {
 				averageLineHeight += r.height
+				toExclude++
 			}
 		}
 	}
-	if len(lineRegions) > 0 {
-		averageLineHeight /= len(lineRegions)
+	if len(lineRegions)-toExclude > 0 {
+		averageLineHeight /= len(lineRegions) - toExclude
 	}
 	return lineRegions, averageLineHeight
 }
