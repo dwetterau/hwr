@@ -113,17 +113,22 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 	predictedLineHeight, lines := getInitialLines(allChunks, idToValleys)
 	fmt.Println(predictedLineHeight)
 
-	// Generate regions
+	toOutput := []gocv.Mat{origImage}
+	toOutput = append(toOutput, origImage.Clone())
+	renderLines(toOutput[len(toOutput)-1], lines)
 
-	// Repair Lines
+	if len(lines) > 0 {
+		// Generate regions
 
-	// Generate regions (2)
+		// Repair Lines
 
-	// Render lines
+		// Generate regions (2)
 
-	// Get regions
+		// Render lines
 
-	toOutput := []gocv.Mat{origImage, origImage.Clone()}
+		// Get regions
+	}
+
 	renderLines(toOutput[1], lines)
 	return toOutput
 }
@@ -363,6 +368,7 @@ func (l *lineStruct) generateInitialPoints(
 }
 
 type regionStruct struct {
+	regionIndex int
 	region      gocv.Mat
 	top, bottom *lineStruct
 	height      int
@@ -371,16 +377,108 @@ type regionStruct struct {
 	mean        []float32
 }
 
-func (r *regionStruct) updateRegion(img *gocv.Mat, something int) {
-	// TODO
+// Returns true if the region is all zeros, false otherwise
+func (r *regionStruct) updateRegion(img gocv.Mat, regionIndex int) bool {
+	r.regionIndex = regionIndex
+	minRegionRow := 0
+	if r.top != nil {
+		minRegionRow = r.top.minRowPosition
+	}
+	r.rowOffset = minRegionRow
+	maxRegionRow := img.Rows()
+	if r.bottom != nil {
+		maxRegionRow = r.bottom.maxRowPosition
+	}
+
+	start := minRegionRow
+	if maxRegionRow < start {
+		start = maxRegionRow
+	}
+	end := maxRegionRow
+	if minRegionRow > end {
+		end = minRegionRow
+	}
+
+	regionTotalRows := end - start
+	region := gocv.NewMatWithSize(regionTotalRows, img.Cols(), gocv.MatTypeCV8U)
+	nonzero := 0
+	for c := 0; c < img.Cols(); c++ {
+		start := 0
+		if r.top != nil {
+			start = r.top.points[c].X
+		}
+		end := img.Rows() - 1
+		if r.bottom != nil {
+			end = r.bottom.points[c].Y
+		}
+		for r := 0; r < regionTotalRows; r++ {
+			origRow := r + minRegionRow
+			val := uint8(255)
+			if origRow >= start && origRow < end {
+				val = img.GetUCharAt(origRow, c)
+			}
+			if val != 0 {
+				nonzero++
+			}
+			region.SetUCharAt(r, c, val)
+		}
+	}
+	r.calculateMean()
+	r.calculateCovariance()
+	return nonzero == region.Cols()*region.Rows()
 }
 
 func (r *regionStruct) calculateMean() {
-	// TODO
+	mean := make([]float32, 2)
+	n := 0
+	for i := 0; i < r.region.Rows(); i++ {
+		for j := 0; j < r.region.Cols(); j++ {
+			if r.region.GetUCharAt(i, j) == 255 {
+				continue
+			}
+
+			if n == 0 {
+				mean[0] = float32(i + r.rowOffset)
+				mean[1] = float32(j)
+			} else {
+				fn := float32(n)
+				f := (fn - 1.0) / fn
+				mean[0] = f*mean[0] + (1-f)*float32(i+r.rowOffset)
+				mean[1] = f*mean[1] + (1-f)*float32(j)
+			}
+			n++
+		}
+	}
 }
 
 func (r *regionStruct) calculateCovariance() {
-	// TODO
+	r.covariance = gocv.NewMatWithSize(2, 2, gocv.MatTypeCV32F)
+	n := 0
+	var sumISquared, sumJSquared, sumIJ float32 = 0.0, 0.0, 0.0
+	for i := 0; i < r.region.Rows(); i++ {
+		for j := 0; j < r.region.Cols(); j++ {
+			if r.region.GetUCharAt(i, j) == 255 {
+				continue
+			}
+
+			newI := float32(i+r.rowOffset) - r.mean[0]
+			newJ := float32(j) - r.mean[1]
+
+			sumISquared += newI * newI
+			sumIJ += newI * newJ
+			sumJSquared += newJ * newJ
+			n++
+		}
+	}
+
+	if n == 0 {
+		return
+	}
+	nf := float32(n)
+	r.covariance.SetFloatAt(0, 0, sumISquared/nf)
+	r.covariance.SetFloatAt(0, 1, sumIJ/nf)
+	r.covariance.SetFloatAt(1, 0, sumIJ/nf)
+	r.covariance.SetFloatAt(1, 1, sumJSquared/nf)
 }
 
 func (r *regionStruct) biVariateGaussianDensity(point image.Point) float64 {
@@ -501,4 +599,52 @@ func renderLines(mat gocv.Mat, lines []*lineStruct) {
 			lastRow = p.X
 		}
 	}
+}
+
+func generateRegions(
+	origImage gocv.Mat,
+	lines []*lineStruct,
+	predictedLineHeight int,
+) ([]*regionStruct, int) {
+	sort.Slice(lines, func(i, j int) bool {
+		return lines[i].minRowPosition < lines[j].minRowPosition
+	})
+
+	lineRegions := make([]*regionStruct, 0, len(lines))
+	r := &regionStruct{bottom: lines[0]}
+	r.updateRegion(origImage, 0)
+
+	lines[0].above = lineRegions[0]
+	lineRegions = append(lineRegions, r)
+
+	regionMaxHeight := int(float64(predictedLineHeight) * 2.5)
+	averageLineHeight := 0
+	if r.height < regionMaxHeight {
+		averageLineHeight += r.height
+	}
+
+	for i := range lines {
+		topLine := lines[i]
+		var bottomLine *lineStruct
+		if i < len(lines)-1 {
+			bottomLine = lines[i+1]
+		}
+
+		r := &regionStruct{top: topLine, bottom: bottomLine}
+		res := r.updateRegion(origImage, i)
+		topLine.below = r
+		if bottomLine != nil {
+			bottomLine.above = r
+		}
+		if !res {
+			lineRegions = append(lineRegions, r)
+			if r.height < regionMaxHeight {
+				averageLineHeight += r.height
+			}
+		}
+	}
+	if len(lineRegions) > 0 {
+		averageLineHeight /= len(lineRegions)
+	}
+	return lineRegions, averageLineHeight
 }
