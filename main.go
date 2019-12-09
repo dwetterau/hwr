@@ -15,7 +15,7 @@ func main() {
 	defer window.Close()
 
 	// prepare image matrix
-	origImg := gocv.IMRead("/Users/davidw/Dropbox/Journal/2019-07-25.jpg", gocv.IMReadGrayScale)
+	origImg := gocv.IMRead("/home/david/Dropbox/Journal/2019-07-25.jpg", gocv.IMReadGrayScale)
 	defer origImg.Close()
 	if origImg.Empty() {
 		panic("didn't load image")
@@ -98,7 +98,36 @@ const (
 
 type valleyID int
 
-var valleyIDCounter = valleyID(0)
+var (
+	valleyIDCounter = valleyID(0)
+
+	notPrimesArray []bool
+	primes         []int
+)
+
+func init() {
+	notPrimesArray = make([]bool, 10000)
+	notPrimesArray[0] = true
+	notPrimesArray[1] = true
+	for i := 2; i < len(notPrimesArray); i++ {
+		if notPrimesArray[i] {
+			continue
+		}
+		primes = append(primes, i)
+		for j := i * 2; j < len(notPrimesArray); j += i {
+			notPrimesArray[j] = true
+		}
+	}
+}
+
+func addPrimesToVector(n int, probPrimes []int) {
+	for i := 0; i < len(primes); i++ {
+		for n%primes[i] != 0 {
+			n /= primes[i]
+			probPrimes[i]++
+		}
+	}
+}
 
 // Heavily inspired by: https://github.com/arthurflor23/text-segmentation/blob/master/src/imgproc/cpp/LineSegmentation.cpp
 func segmentLines(origImage gocv.Mat) []gocv.Mat {
@@ -114,6 +143,8 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinary, 11, 10)
 	toOutput = append(toOutput, thresholded)
 
+	contours := getContours(thresholded)
+
 	// Generate chunks
 	allChunks := generateChunks(thresholded)
 
@@ -126,21 +157,69 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 
 	if len(lines) > 0 {
 		// Generate regions
-		regions, _ := generateRegions(thresholded, lines, predictedLineHeight)
-		for _, r := range regions {
-			toOutput = append(toOutput, r.region)
-		}
+		_, averageLineHeight := generateRegions(thresholded, lines, predictedLineHeight)
 
 		// Repair Lines
+		repairLines(thresholded, lines, averageLineHeight, contours)
 
 		// Generate regions (2)
+		//regions, _ = generateRegions(thresholded, lines, predictedLineHeight)
+
+		/*
+			for _, r := range regions {
+				toOutput = append(toOutput, r.region)
+			}
+		*/
 
 		// Render lines
+		toOutput = append(toOutput, origImage.Clone())
+		renderLines(toOutput[len(toOutput)-1], lines)
 
 		// Get regions
 	}
 
 	return toOutput
+}
+
+func getContours(origImage gocv.Mat) []image.Rectangle {
+	contours := gocv.FindContours(origImage, gocv.RetrievalList, gocv.ChainApproxNone)
+
+	approxCountours := make([][]image.Point, len(contours))
+	boundingRectangles := make([]image.Rectangle, len(contours)-1)
+	for i := 0; i < len(contours)-1; i++ {
+		approxCountours[i] = gocv.ApproxPolyDP(contours[i], 1.0, true)
+		boundingRectangles[i] = gocv.BoundingRect(approxCountours[i])
+	}
+
+	var r3 image.Rectangle
+	var mergedRectangles []image.Rectangle
+
+	// TODO: Do I need to convert the input image?
+
+	for i, r1 := range boundingRectangles {
+		isRepeated := false
+		a1 := r1.Size().X * r1.Size().Y
+		for j := i + 1; j < len(boundingRectangles); j++ {
+			r2 := boundingRectangles[j]
+			a2 := r2.Size().X * r2.Size().Y
+			r3 = r1.Intersect(boundingRectangles[j])
+			a3 := r3.Size().X * r3.Size().Y
+			if a3 == a1 || a3 == a2 {
+				isRepeated = true
+				r3 = r1.Union(r2)
+
+				// Why is this -2?
+				if j == len(boundingRectangles)-2 {
+					mergedRectangles = append(mergedRectangles, r3)
+				}
+				boundingRectangles[j] = r3
+			}
+		}
+		if !isRepeated {
+			mergedRectangles = append(mergedRectangles, r1)
+		}
+	}
+	return mergedRectangles
 }
 
 type chunkStruct struct {
@@ -487,9 +566,25 @@ func (r *regionStruct) calculateCovariance() {
 	r.covariance.SetFloatAt(1, 1, sumJSquared/nf)
 }
 
-func (r *regionStruct) biVariateGaussianDensity(point image.Point) float64 {
-	// TODO
-	return 0
+func (r *regionStruct) biVariateGaussianDensity(point gocv.Mat) float64 {
+	point.SetFloatAt(0, 0, point.GetFloatAt(0, 0)-r.mean[0])
+	point.SetFloatAt(0, 1, point.GetFloatAt(0, 1)-r.mean[1])
+
+	pointTranspose := gocv.NewMat()
+	gocv.Transpose(point, &pointTranspose)
+
+	invCovariance := gocv.NewMat()
+	gocv.Invert(r.covariance, &invCovariance, 0)
+
+	dst := point.MultiplyMatrix(invCovariance)
+	dst2 := dst.MultiplyMatrix(pointTranspose)
+
+	v1 := float64(dst2.GetFloatAt(0, 0))
+
+	c := r.covariance.Clone()
+	c.MultiplyFloat(2 * math.Pi)
+	det := gocv.Determinant(c)
+	return v1 * math.Sqrt(det)
 }
 
 func generateChunks(origImage gocv.Mat) []*chunkStruct {
@@ -657,4 +752,131 @@ func generateRegions(
 		averageLineHeight /= len(lineRegions) - toExclude
 	}
 	return lineRegions, averageLineHeight
+}
+
+func repairLines(
+	thresholdedImage gocv.Mat,
+	lines []*lineStruct,
+	averageLineHeight int,
+	contours []image.Rectangle,
+) {
+	for _, l := range lines {
+		columnProcessed := make(map[int]bool, len(l.points))
+		for i := 0; i < len(l.points); i++ {
+			p := l.points[i]
+			x := p.X
+			y := p.Y
+			if thresholdedImage.GetUCharAt(p.X, p.Y) == 255 {
+				if i == 0 {
+					continue
+				}
+				blackFound := false
+
+				if l.points[i-1].X != l.points[i].X {
+					minRow := l.points[i].X
+					maxRow := l.points[i].X
+					if l.points[i-1].X < minRow {
+						minRow = l.points[i-1].X
+					}
+					if l.points[i-1].X > maxRow {
+						maxRow = l.points[i-1].X
+					}
+
+					for j := minRow; j <= maxRow && !blackFound; j++ {
+						if thresholdedImage.GetUCharAt(j, l.points[i-1].Y) == 0 {
+							x = j
+							y = l.points[i-1].Y
+							blackFound = true
+						}
+					}
+				}
+				if !blackFound {
+					continue
+				}
+			}
+			if columnProcessed[y] {
+				continue
+			}
+			columnProcessed[y] = true
+
+			for _, c := range contours {
+				if y >= c.Min.X && y <= c.Max.X && x >= c.Min.Y && x <= c.Max.Y {
+					// This seems weird, why do we want the contours to be smaller than a line??
+					if c.Max.Y-c.Min.Y > int(float64(averageLineHeight)*1.5) {
+						continue
+					}
+
+					isComponentAbove := componentBelongsToAboveRegion(thresholdedImage, l, c)
+
+					var newRow int
+					if !isComponentAbove {
+						newRow = c.Min.Y
+						if newRow < l.minRowPosition {
+							l.minRowPosition = newRow
+						}
+					} else {
+						newRow = c.Max.Y
+						if newRow > l.maxRowPosition {
+							l.maxRowPosition = newRow
+						}
+					}
+					for k := c.Min.X; k < c.Min.X+c.Size().X; k++ {
+						l.points[k].X = newRow
+					}
+					i = c.Max.X
+					break
+				}
+			}
+		}
+	}
+}
+
+func componentBelongsToAboveRegion(
+	thresholdedImage gocv.Mat,
+	line *lineStruct,
+	contour image.Rectangle,
+) bool {
+	probAbovePrimes := make([]int, len(primes))
+	probBelowPrimes := make([]int, len(primes))
+	n := 0
+
+	for i := contour.Min.X; i < contour.Min.X+contour.Size().X; i++ {
+		for j := contour.Min.Y; j < contour.Min.Y+contour.Size().Y; j++ {
+			if thresholdedImage.GetUCharAt(j, i) == 255 {
+				continue
+			}
+			n++
+
+			contourPoint := gocv.NewMatWithSize(1, 2, gocv.MatTypeCV32F)
+			contourPoint.SetFloatAt(0, 0, float32(j))
+			contourPoint.SetFloatAt(0, 0, float32(i))
+
+			newProbAbove, newProbBelow := 0, 0
+			if line.above != nil {
+				newProbAbove = int(line.above.biVariateGaussianDensity(contourPoint.Clone()))
+			}
+			if line.below != nil {
+				newProbBelow = int(line.below.biVariateGaussianDensity(contourPoint.Clone()))
+			}
+
+			addPrimesToVector(newProbAbove, probAbovePrimes)
+			addPrimesToVector(newProbBelow, probBelowPrimes)
+		}
+	}
+
+	probAbove, probBelow := 0, 0
+	for k := 0; k < len(probAbovePrimes); k++ {
+		mini := probAbovePrimes[k]
+		if probBelowPrimes[k] < mini {
+			mini = probBelowPrimes[k]
+		}
+		probAbovePrimes[k] -= mini
+		probBelowPrimes[k] -= mini
+
+		probAbove += probAbovePrimes[k] * primes[k]
+		probBelow += probBelowPrimes[k] * primes[k]
+	}
+
+	// Doesn't this seem backwards??
+	return probAbove < probBelow
 }
