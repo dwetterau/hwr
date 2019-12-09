@@ -90,7 +90,7 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 
 const (
 	totalChunks  = 20
-	valleyFactor = 2
+	valleyFactor = 4
 	// I think this should be < width / totalChunks
 	minAvgHeight   = 30
 	blackThreshold = 0
@@ -106,18 +106,20 @@ var (
 )
 
 func init() {
-	notPrimesArray = make([]bool, 10000)
-	notPrimesArray[0] = true
-	notPrimesArray[1] = true
-	for i := 2; i < len(notPrimesArray); i++ {
-		if notPrimesArray[i] {
-			continue
-		}
-		primes = append(primes, i)
-		for j := i * 2; j < len(notPrimesArray); j += i {
-			notPrimesArray[j] = true
-		}
-	}
+	/*
+		primes := make([]int, 0, 100)
+		notPrimesArray = make([]bool, 10000)
+		notPrimesArray[0] = true
+		notPrimesArray[1] = true
+		for i := 2; i < len(notPrimesArray); i++ {
+			if notPrimesArray[i] {
+				continue
+			}
+			primes = append(primes, i)
+			for j := i * 2; j < len(notPrimesArray); j += i {
+				notPrimesArray[j] = true
+			}
+		}*/
 }
 
 func addPrimesToVector(n int, probPrimes []int) {
@@ -144,6 +146,11 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 	toOutput = append(toOutput, thresholded)
 
 	contours := getContours(thresholded)
+	toOutput = append(toOutput, origImage.Clone())
+	blue := color.RGBA{0, 0, 255, 0}
+	for _, c := range contours {
+		gocv.Rectangle(&toOutput[len(toOutput)-1], c, blue, 2)
+	}
 
 	// Generate chunks
 	allChunks := generateChunks(thresholded)
@@ -178,11 +185,11 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 		// Get regions
 	}
 
-	return toOutput[len(toOutput)-2:]
+	return toOutput[len(toOutput)-3:]
 }
 
-func getContours(origImage gocv.Mat) []image.Rectangle {
-	contours := gocv.FindContours(origImage, gocv.RetrievalList, gocv.ChainApproxNone)
+func getContours(binaryImage gocv.Mat) []image.Rectangle {
+	contours := gocv.FindContours(binaryImage, gocv.RetrievalList, gocv.ChainApproxNone)
 
 	approxCountours := make([][]image.Point, len(contours))
 	boundingRectangles := make([]image.Rectangle, len(contours)-1)
@@ -802,8 +809,9 @@ func repairLines(
 
 			for _, c := range contours {
 				if y >= c.Min.X && y <= c.Max.X && x >= c.Min.Y && x <= c.Max.Y {
-					// This seems weird, why do we want the contours to be smaller than a line??
-					if c.Max.Y-c.Min.Y > int(float64(averageLineHeight)*0.9) {
+					// We want the contours to be smaller than a line because they should be within one.
+					// TODO move this out
+					if c.Max.Y-c.Min.Y > int(float64(averageLineHeight)*1.0) {
 						continue
 					}
 
@@ -837,9 +845,10 @@ func componentBelongsToAboveRegion(
 	line *lineStruct,
 	contour image.Rectangle,
 ) bool {
-	probAbovePrimes := make([]int, len(primes))
-	probBelowPrimes := make([]int, len(primes))
+	//probAbovePrimes := make([]int, len(primes))
+	//probBelowPrimes := make([]int, len(primes))
 	n := 0
+	newProbAbove, newProbBelow := int64(0), int64(0)
 
 	for i := contour.Min.X; i < contour.Min.X+contour.Size().X; i++ {
 		for j := contour.Min.Y; j < contour.Min.Y+contour.Size().Y; j++ {
@@ -852,32 +861,34 @@ func componentBelongsToAboveRegion(
 			contourPoint.SetFloatAt(0, 0, float32(j))
 			contourPoint.SetFloatAt(0, 1, float32(i))
 
-			newProbAbove, newProbBelow := 0, 0
 			if line.above != nil {
-				newProbAbove = int(line.above.biVariateGaussianDensity(contourPoint.Clone()))
+				newProbAbove += int64(line.above.biVariateGaussianDensity(contourPoint.Clone()))
 			}
 			if line.below != nil {
-				newProbBelow = int(line.below.biVariateGaussianDensity(contourPoint.Clone()))
+				newProbBelow += int64(line.below.biVariateGaussianDensity(contourPoint.Clone()))
 			}
 
-			addPrimesToVector(newProbAbove, probAbovePrimes)
-			addPrimesToVector(newProbBelow, probBelowPrimes)
+			//addPrimesToVector(newProbAbove, probAbovePrimes)
+			//addPrimesToVector(newProbBelow, probBelowPrimes)
 		}
 	}
+	return newProbAbove < newProbBelow
 
-	probAbove, probBelow := 0, 0
-	for k := 0; k < len(probAbovePrimes); k++ {
-		mini := probAbovePrimes[k]
-		if probBelowPrimes[k] < mini {
-			mini = probBelowPrimes[k]
+	/*
+		probAbove, probBelow := 0, 0
+		for k := 0; k < len(probAbovePrimes); k++ {
+			mini := probAbovePrimes[k]
+			if probBelowPrimes[k] < mini {
+				mini = probBelowPrimes[k]
+			}
+			probAbovePrimes[k] -= mini
+			probBelowPrimes[k] -= mini
+
+			probAbove += probAbovePrimes[k] * primes[k]
+			probBelow += probBelowPrimes[k] * primes[k]
 		}
-		probAbovePrimes[k] -= mini
-		probBelowPrimes[k] -= mini
 
-		probAbove += probAbovePrimes[k] * primes[k]
-		probBelow += probBelowPrimes[k] * primes[k]
-	}
-
-	// Doesn't this seem backwards??
-	return probAbove < probBelow
+		// Doesn't this seem backwards??
+		return probAbove < probBelow
+	*/
 }
