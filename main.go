@@ -90,7 +90,7 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 
 const (
 	totalChunks  = 20
-	valleyFactor = 4
+	valleyFactor = 2
 	// I think this should be < width / totalChunks
 	minAvgHeight   = 30
 	blackThreshold = 0
@@ -178,7 +178,7 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 		// Get regions
 	}
 
-	return toOutput
+	return toOutput[len(toOutput)-2:]
 }
 
 func getContours(origImage gocv.Mat) []image.Rectangle {
@@ -744,6 +744,7 @@ func generateRegions(
 			lineRegions = append(lineRegions, r)
 			if r.height < regionMaxHeight {
 				averageLineHeight += r.height
+			} else {
 				toExclude++
 			}
 		}
@@ -802,7 +803,7 @@ func repairLines(
 			for _, c := range contours {
 				if y >= c.Min.X && y <= c.Max.X && x >= c.Min.Y && x <= c.Max.Y {
 					// This seems weird, why do we want the contours to be smaller than a line??
-					if c.Max.Y-c.Min.Y > int(float64(averageLineHeight)*1.5) {
+					if c.Max.Y-c.Min.Y > int(float64(averageLineHeight)*0.9) {
 						continue
 					}
 
@@ -849,7 +850,7 @@ func componentBelongsToAboveRegion(
 
 			contourPoint := gocv.NewMatWithSize(1, 2, gocv.MatTypeCV32F)
 			contourPoint.SetFloatAt(0, 0, float32(j))
-			contourPoint.SetFloatAt(0, 0, float32(i))
+			contourPoint.SetFloatAt(0, 1, float32(i))
 
 			newProbAbove, newProbBelow := 0, 0
 			if line.above != nil {
