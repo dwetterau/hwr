@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -90,9 +91,9 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 
 const (
 	totalChunks  = 20
-	valleyFactor = 4
+	valleyFactor = 1
 	// I think this should be < width / totalChunks
-	minAvgHeight   = 30
+	minAvgHeight   = 80
 	blackThreshold = 0
 )
 
@@ -153,11 +154,11 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 	}
 
 	// Generate chunks
-	allChunks := generateChunks(thresholded)
+	bigChunk, allChunks := generateChunks(thresholded)
 
 	// Get the initial lines
 	idToValleys := make(map[valleyID]*valleyStruct, 50)
-	predictedLineHeight, lines := getInitialLines(thresholded, allChunks, idToValleys)
+	predictedLineHeight, lines := getInitialLines(thresholded, bigChunk, allChunks, idToValleys)
 
 	toOutput = append(toOutput, origImage.Clone())
 	renderLines(toOutput[len(toOutput)-1], lines)
@@ -185,6 +186,7 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 		// Get regions
 	}
 
+	//return []gocv.Mat{bigChunk.mat}
 	return toOutput[len(toOutput)-3:]
 }
 
@@ -200,8 +202,6 @@ func getContours(binaryImage gocv.Mat) []image.Rectangle {
 
 	var r3 image.Rectangle
 	var mergedRectangles []image.Rectangle
-
-	// TODO: Do I need to convert the input image?
 
 	for i, r1 := range boundingRectangles {
 		isRepeated := false
@@ -275,14 +275,23 @@ func (c *chunkStruct) findPeaksAndValleys(idToValley map[valleyID]*valleyStruct)
 	if len(c.peaks) > 0 {
 		peaksAverageValues /= len(c.peaks)
 	}
+	fmt.Println(peaksAverageValues)
+
 	newPeaks := make([]peakStruct, 0, len(c.peaks))
 	for _, p := range c.peaks {
-		if p.value >= peaksAverageValues/valleyFactor {
+		if p.value >= peaksAverageValues*valleyFactor {
 			newPeaks = append(newPeaks, p)
 		}
 	}
 	c.linesCount = len(newPeaks)
 	c.peaks = newPeaks
+	if c.index == totalChunks {
+		fmt.Println(len(c.peaks))
+		for _, p := range c.peaks {
+			fmt.Println(p.position, p.value)
+			gocv.Line(&c.mat, image.Point{X: 0, Y: p.position}, image.Point{X: c.chunkWidth - 1, Y: p.position}, color.RGBA{255, 0, 0, 0}, 2)
+		}
+	}
 
 	sort.Slice(c.peaks, func(i, j int) bool {
 		return c.peaks[i].position > c.peaks[j].position
@@ -406,6 +415,9 @@ func (l *lineStruct) generateInitialPoints(
 	})
 
 	firstV := idToValley[l.valleyIDs[0]]
+	if firstV.chunkIndex == totalChunks {
+		panic("First valley was a big chunk")
+	}
 	if firstV.chunkIndex > 0 {
 		previousRow = firstV.position
 		l.maxRowPosition = previousRow
@@ -420,9 +432,10 @@ func (l *lineStruct) generateInitialPoints(
 	}
 
 	for _, vid := range l.valleyIDs {
-		chunkIndex := idToValley[vid].chunkIndex
-		chunkRow := idToValley[vid].position
-		chunkStartColumn := chunkIndex * chunkWidth
+		v := idToValley[vid]
+
+		chunkIndex := v.chunkIndex
+		chunkRow := v.position
 		if chunkRow < l.minRowPosition {
 			l.minRowPosition = chunkRow
 		}
@@ -430,7 +443,8 @@ func (l *lineStruct) generateInitialPoints(
 			l.maxRowPosition = chunkRow
 		}
 
-		for j := chunkStartColumn; j < chunkStartColumn+chunkWidth; j++ {
+		chunkStartColumn := chunkIndex * chunkWidth
+		for j := chunkStartColumn; j < chunkStartColumn+chunkWidth && j < imageWidth; j++ {
 			if c == j {
 				l.points = append(l.points, image.Point{X: chunkRow, Y: j})
 			}
@@ -442,16 +456,13 @@ func (l *lineStruct) generateInitialPoints(
 	}
 
 	lastValley := idToValley[l.valleyIDs[len(l.valleyIDs)-1]]
-	if totalChunks-1 >= lastValley.chunkIndex {
-		chunkIndex := lastValley.chunkIndex
-		chunkRow := lastValley.position
-
-		for j := chunkIndex*chunkWidth + chunkWidth; j < imageWidth; j++ {
-			if c == j {
-				l.points = append(l.points, image.Point{X: chunkRow, Y: j})
-			}
-			c++
+	chunkIndex := lastValley.chunkIndex
+	chunkRow := lastValley.position
+	for j := chunkIndex*chunkWidth + chunkWidth; j < imageWidth; j++ {
+		if c == j {
+			l.points = append(l.points, image.Point{X: chunkRow, Y: j})
 		}
+		c++
 	}
 }
 
@@ -594,7 +605,7 @@ func (r *regionStruct) biVariateGaussianDensity(point gocv.Mat) float64 {
 	return v1 * math.Sqrt(det)
 }
 
-func generateChunks(origImage gocv.Mat) []*chunkStruct {
+func generateChunks(origImage gocv.Mat) (*chunkStruct, []*chunkStruct) {
 	width := origImage.Cols() / totalChunks
 
 	chunks := make([]*chunkStruct, totalChunks)
@@ -607,14 +618,37 @@ func generateChunks(origImage gocv.Mat) []*chunkStruct {
 		}
 		startPixel += width
 	}
-	return chunks
+
+	nChunks := 10
+	bigWidth := nChunks * width
+	bigOffset := origImage.Cols() - bigWidth
+	bigChunk := &chunkStruct{
+		index:      totalChunks,
+		startPixel: bigOffset,
+		chunkWidth: bigWidth,
+		mat:        origImage.Region(image.Rect(bigOffset, 0, bigOffset+bigWidth, origImage.Rows())),
+	}
+	return bigChunk, chunks
 }
 
 // Returns predicted line height and the initial lines
-func getInitialLines(origImage gocv.Mat, chunks []*chunkStruct, idToValleys map[valleyID]*valleyStruct) (int, []*lineStruct) {
+func getInitialLines(
+	origImage gocv.Mat,
+	bigChunk *chunkStruct,
+	chunks []*chunkStruct,
+	idToValleys map[valleyID]*valleyStruct,
+) (int, []*lineStruct) {
 	lines := make([]*lineStruct, 0, len(chunks))
 	numberOfHeights, valleysMinAbsoluteDistance := 0, 0
-	for _, c := range chunks {
+	var normalChunkWidth int
+	for i := 0; i <= len(chunks); i++ {
+		var c *chunkStruct
+		if i < len(chunks) {
+			c = chunks[i]
+			normalChunkWidth = c.chunkWidth
+		} else {
+			c = bigChunk
+		}
 		c.findPeaksAndValleys(idToValleys)
 		if c.avgHeight > 0 {
 			numberOfHeights++
@@ -623,8 +657,15 @@ func getInitialLines(origImage gocv.Mat, chunks []*chunkStruct, idToValleys map[
 	}
 	valleysMinAbsoluteDistance /= numberOfHeights
 
-	for i := len(chunks) - 1; i >= 0; i-- {
-		for _, vid := range chunks[i].valleyIDs {
+	for i := len(chunks); i >= 0; i-- {
+		var c *chunkStruct
+		if i == len(chunks) {
+			c = bigChunk
+		} else {
+			c = chunks[i]
+		}
+
+		for _, vid := range c.valleyIDs {
 			v := idToValleys[vid]
 			if v.used {
 				continue
@@ -634,9 +675,8 @@ func getInitialLines(origImage gocv.Mat, chunks []*chunkStruct, idToValleys map[
 				valleyIDs: []valleyID{vid},
 			}
 			connectValleys(chunks, idToValleys, i-1, vid, l, valleysMinAbsoluteDistance)
-			l.generateInitialPoints(chunks[i].chunkWidth, origImage.Cols(), idToValleys)
-
-			if len(l.valleyIDs) > 1 {
+			if len(l.valleyIDs) > 2 {
+				l.generateInitialPoints(normalChunkWidth, origImage.Cols(), idToValleys)
 				lines = append(lines, l)
 			}
 		}
@@ -811,7 +851,7 @@ func repairLines(
 				if y >= c.Min.X && y <= c.Max.X && x >= c.Min.Y && x <= c.Max.Y {
 					// We want the contours to be smaller than a line because they should be within one.
 					// TODO move this out
-					if c.Max.Y-c.Min.Y > int(float64(averageLineHeight)*1.0) {
+					if c.Max.Y-c.Min.Y > int(float64(averageLineHeight)*0.9) {
 						continue
 					}
 
