@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -91,7 +90,7 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 
 const (
 	totalChunks  = 20
-	valleyFactor = 1
+	valleyFactor = .60
 	// I think this should be < width / totalChunks
 	minAvgHeight   = 80
 	blackThreshold = 0
@@ -143,10 +142,18 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 	toOutput = append(toOutput, blurred)
 
 	thresholded := gocv.NewMat()
-	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinary, 11, 10)
+	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 11, 11)
 	toOutput = append(toOutput, thresholded)
 
-	contours := getContours(thresholded)
+	dilated := gocv.NewMat()
+	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 7, Y: 1})
+	gocv.Dilate(thresholded, &dilated, dilationKernal)
+
+	invertedDilated := gocv.NewMat()
+	gocv.BitwiseNot(dilated, &invertedDilated)
+
+	finalBinaryImage := invertedDilated
+	contours := getContours(finalBinaryImage)
 	toOutput = append(toOutput, origImage.Clone())
 	blue := color.RGBA{0, 0, 255, 0}
 	for _, c := range contours {
@@ -154,21 +161,21 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 	}
 
 	// Generate chunks
-	bigChunk, allChunks := generateChunks(thresholded)
+	bigChunk, allChunks := generateChunks(finalBinaryImage)
 
 	// Get the initial lines
 	idToValleys := make(map[valleyID]*valleyStruct, 50)
-	predictedLineHeight, lines := getInitialLines(thresholded, bigChunk, allChunks, idToValleys)
+	predictedLineHeight, lines := getInitialLines(finalBinaryImage, bigChunk, allChunks, idToValleys)
 
 	toOutput = append(toOutput, origImage.Clone())
 	renderLines(toOutput[len(toOutput)-1], lines)
 
 	if len(lines) > 0 {
 		// Generate regions
-		_, averageLineHeight := generateRegions(thresholded, lines, predictedLineHeight)
+		_, averageLineHeight := generateRegions(finalBinaryImage, lines, predictedLineHeight)
 
 		// Repair Lines
-		repairLines(thresholded, lines, averageLineHeight, contours)
+		repairLines(finalBinaryImage, lines, averageLineHeight, contours)
 
 		// Generate regions (2)
 		//regions, _ = generateRegions(thresholded, lines, predictedLineHeight)
@@ -186,7 +193,6 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 		// Get regions
 	}
 
-	//return []gocv.Mat{bigChunk.mat}
 	return toOutput[len(toOutput)-3:]
 }
 
@@ -275,24 +281,15 @@ func (c *chunkStruct) findPeaksAndValleys(idToValley map[valleyID]*valleyStruct)
 	if len(c.peaks) > 0 {
 		peaksAverageValues /= len(c.peaks)
 	}
-	fmt.Println(peaksAverageValues)
 
 	newPeaks := make([]peakStruct, 0, len(c.peaks))
 	for _, p := range c.peaks {
-		if p.value >= peaksAverageValues*valleyFactor {
+		if p.value >= int(float64(peaksAverageValues)*valleyFactor) {
 			newPeaks = append(newPeaks, p)
 		}
 	}
 	c.linesCount = len(newPeaks)
 	c.peaks = newPeaks
-	if c.index == totalChunks {
-		fmt.Println(len(c.peaks))
-		for _, p := range c.peaks {
-			fmt.Println(p.position, p.value)
-			gocv.Line(&c.mat, image.Point{X: 0, Y: p.position}, image.Point{X: c.chunkWidth - 1, Y: p.position}, color.RGBA{255, 0, 0, 0}, 2)
-		}
-	}
-
 	sort.Slice(c.peaks, func(i, j int) bool {
 		return c.peaks[i].position > c.peaks[j].position
 	})
@@ -361,7 +358,7 @@ func (c *chunkStruct) calculateHistogram() {
 		return whiteSpaces[i] < whiteSpaces[j]
 	})
 	for _, space := range whiteSpaces {
-		if space > valleyFactor*c.avgHeight {
+		if space > int(valleyFactor*float64(c.avgHeight)) {
 			break
 		}
 		c.avgWhiteHeight += space
@@ -650,10 +647,12 @@ func getInitialLines(
 			c = bigChunk
 		}
 		c.findPeaksAndValleys(idToValleys)
-		if c.avgHeight > 0 {
-			numberOfHeights++
+		if i < len(chunks) {
+			if c.avgHeight > 0 {
+				numberOfHeights++
+			}
+			valleysMinAbsoluteDistance += c.avgHeight
 		}
-		valleysMinAbsoluteDistance += c.avgHeight
 	}
 	valleysMinAbsoluteDistance /= numberOfHeights
 
