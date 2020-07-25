@@ -25,7 +25,11 @@ func main() {
 	// images := segmentLines(origImg)
 	images := detectLines(origImg)
 
-	images = detectWords(images[0])
+	finalImages := []gocv.Mat{}
+	for _, i := range images {
+		finalImages = append(finalImages, detectWords(i)[0])
+	}
+	images = finalImages
 
 	i := 0
 	for {
@@ -43,42 +47,35 @@ func main() {
 
 func detectWords(origImg gocv.Mat) []gocv.Mat {
 	blurred := gocv.NewMat()
-	gocv.Blur(origImg, &blurred, image.Point{X: 10, Y: 10})
+	gocv.Blur(origImg, &blurred, image.Point{X: 5, Y: 5})
 
 	thresholded := gocv.NewMat()
-	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 7, 4)
+	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 11, 11)
 
 	dilated := gocv.NewMat()
-	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 5, Y: 1})
-	dilationKernalTall := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 5, Y: 2})
-	src, dst := &thresholded, &dilated
+	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 25, Y: 3})
+	gocv.Dilate(thresholded, &dilated, dilationKernal)
 
-	newSrc := gocv.NewMat()
-	defer newSrc.Close()
+	finalBinaryImage := dilated
 
-	iterations := 5
-	for i := 0; i < iterations; i++ {
-		k := dilationKernal
-		if i == iterations-1 {
-			k = dilationKernalTall
-		}
-		gocv.Dilate(*src, dst, k)
-		newDst := &newSrc
-		if i != 0 {
-			newDst = src
-		}
-		src = dst
-		dst = newDst
-	}
-	dilated = *src
-
-	contours := gocv.FindContours(dilated, gocv.RetrievalExternal, gocv.ChainApproxSimple)
+	contours := gocv.FindContours(finalBinaryImage, gocv.RetrievalExternal, gocv.ChainApproxSimple)
 	blue := color.RGBA{0, 0, 255, 0}
 	rectangles := make([]image.Rectangle, 0, len(contours))
 	for _, c := range contours {
 		r := gocv.BoundingRect(c)
 		s := r.Size()
-		if s.X*s.Y > 100 {
+		// Exclude noise around the edges
+		if r.Max.Y == origImg.Rows() {
+			if r.Min.Y > origImg.Rows()/2 {
+				continue
+			}
+		}
+		if r.Min.Y == 0 {
+			if r.Max.Y < origImg.Rows()/2 {
+				continue
+			}
+		}
+		if s.X > 50 && s.Y > 15 {
 			rectangles = append(rectangles, r)
 		}
 	}
@@ -90,7 +87,7 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 		gocv.Rectangle(&final, r, blue, 3)
 	}
 
-	return []gocv.Mat{origImg, blurred, thresholded, dilated, final}
+	return []gocv.Mat{final}
 }
 
 func detectLines(origImg gocv.Mat) []gocv.Mat {
@@ -162,32 +159,25 @@ func detectLines(origImg gocv.Mat) []gocv.Mat {
 		positions = append(positions, y)
 	}
 
-	// we make two regions for the alternating lines
-	odds := gocv.NewMatWithSize(origImg.Rows(), origImg.Cols(), origImg.Type())
-	evens := gocv.NewMatWithSize(origImg.Rows(), origImg.Cols(), origImg.Type())
-	toOutput = append(toOutput, evens, odds)
-
 	start := 0
+	if positions[0]-avgHeight > 0 {
+		start = positions[0] - avgHeight
+	}
 	for i := 0; i <= len(positions); i++ {
 		end := 0
 		if i == len(positions) {
-			end = origImg.Rows()
+			end = positions[i-1] + avgHeight
 		} else {
 			end = positions[i]
 		}
-		dest := odds
-		other := evens
-		if i%2 == 0 {
-			dest = evens
-			other = odds
-		}
+		dest := gocv.NewMatWithSize(end-start, origImg.Cols(), origImg.Type())
 		for c := 0; c < origImg.Cols(); c++ {
 			for r := start; r < end; r++ {
-				dest.SetUCharAt(r, c, origImg.GetUCharAt(r, c))
-				other.SetUCharAt(r, c, uint8(255))
+				dest.SetUCharAt(r-start, c, origImg.GetUCharAt(r, c))
 			}
 		}
 		start = end
+		toOutput = append(toOutput, dest)
 	}
 	_ = finalBinaryImage.Close()
 
