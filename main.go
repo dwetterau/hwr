@@ -27,7 +27,7 @@ func main() {
 
 	finalImages := []gocv.Mat{}
 	for _, i := range images {
-		finalImages = append(finalImages, detectWords(i)[0])
+		finalImages = append(finalImages, detectWords(i)...)
 	}
 	images = finalImages
 
@@ -50,7 +50,9 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 	gocv.Blur(origImg, &blurred, image.Point{X: 5, Y: 5})
 
 	thresholded := gocv.NewMat()
+	defer func() { _ = thresholded.Close() }()
 	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 11, 11)
+	_ = blurred.Close()
 
 	dilated := gocv.NewMat()
 	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 25, Y: 3})
@@ -59,7 +61,7 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 	finalBinaryImage := dilated
 
 	contours := gocv.FindContours(finalBinaryImage, gocv.RetrievalExternal, gocv.ChainApproxSimple)
-	blue := color.RGBA{0, 0, 255, 0}
+	_ = finalBinaryImage.Close()
 	rectangles := make([]image.Rectangle, 0, len(contours))
 	for _, c := range contours {
 		r := gocv.BoundingRect(c)
@@ -80,14 +82,17 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 		}
 	}
 
-	final := gocv.NewMat()
-
-	gocv.CopyMakeBorder(origImg, &final, 0, 0, 0, 0, gocv.BorderConstant, blue)
-	for _, r := range rectangles {
-		gocv.Rectangle(&final, r, blue, 3)
+	toOutput := make([]gocv.Mat, len(rectangles))
+	for i, rect := range rectangles {
+		s := rect.Size()
+		toOutput[i] = gocv.NewMatWithSize(s.Y, s.X, thresholded.Type())
+		for r := 0; r < s.Y; r++ {
+			for c := 0; c < s.X; c++ {
+				toOutput[i].SetUCharAt(r, c, 255-thresholded.GetUCharAt(rect.Min.Y+r, rect.Min.X+c))
+			}
+		}
 	}
-
-	return []gocv.Mat{final}
+	return toOutput
 }
 
 func detectLines(origImg gocv.Mat) []gocv.Mat {
