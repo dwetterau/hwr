@@ -21,11 +21,9 @@ func main() {
 	if origImg.Empty() {
 		panic("didn't load image")
 	}
-	//images := detectWords(origImg)
-	// images := segmentLines(origImg)
 	images := detectLines(origImg)
 
-	finalImages := []gocv.Mat{}
+	finalImages := make([]ImgAndReference, 0, len(images)*10)
 	for _, i := range images {
 		finalImages = append(finalImages, detectWords(i)...)
 	}
@@ -34,18 +32,36 @@ func main() {
 	i := 0
 	for {
 		toDraw := images[i%len(images)]
-		window.IMShow(toDraw)
-		if window.WaitKey(1000) == 27 {
+
+		c := origImg.Clone()
+		gocv.Rectangle(&c, image.Rect(
+			toDraw.origC,
+			toDraw.origR,
+			toDraw.origC+toDraw.mat.Cols(),
+			toDraw.origR+toDraw.mat.Rows(),
+		), color.RGBA{0, 0, 255, 0}, 3)
+
+		window.IMShow(c)
+		if window.WaitKey(100) == 27 {
 			break
 		}
+		_ = c.Close()
 		i++
 	}
 	for _, i := range images {
-		_ = i.Close()
+		_ = i.mat.Close()
 	}
 }
 
-func detectWords(origImg gocv.Mat) []gocv.Mat {
+type ImgAndReference struct {
+	mat          gocv.Mat
+	origR, origC int
+	line, word   int
+	label        string
+}
+
+func detectWords(orig ImgAndReference) []ImgAndReference {
+	origImg := orig.mat
 	blurred := gocv.NewMat()
 	gocv.Blur(origImg, &blurred, image.Point{X: 5, Y: 5})
 
@@ -81,22 +97,38 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 			rectangles = append(rectangles, r)
 		}
 	}
+	sort.Slice(rectangles, func(i, j int) bool {
+		if rectangles[i].Min.X != rectangles[j].Min.X {
+			return rectangles[i].Min.X < rectangles[j].Min.X
+		}
+		if rectangles[i].Min.Y != rectangles[j].Min.Y {
+			return rectangles[i].Min.Y < rectangles[j].Min.Y
+		}
+		return rectangles[i].Size().X < rectangles[j].Size().X
+	})
 
-	toOutput := make([]gocv.Mat, len(rectangles))
+	toOutput := make([]ImgAndReference, len(rectangles))
 	for i, rect := range rectangles {
 		s := rect.Size()
-		toOutput[i] = gocv.NewMatWithSize(s.Y, s.X, thresholded.Type())
+		mat := gocv.NewMatWithSize(s.Y, s.X, thresholded.Type())
 		for r := 0; r < s.Y; r++ {
 			for c := 0; c < s.X; c++ {
-				toOutput[i].SetUCharAt(r, c, 255-thresholded.GetUCharAt(rect.Min.Y+r, rect.Min.X+c))
+				mat.SetUCharAt(r, c, 255-thresholded.GetUCharAt(rect.Min.Y+r, rect.Min.X+c))
 			}
+		}
+		toOutput[i] = ImgAndReference{
+			mat:   mat,
+			origR: orig.origR + rect.Min.Y,
+			origC: orig.origC + rect.Min.X,
+			line:  orig.line,
+			word:  i,
+			label: "",
 		}
 	}
 	return toOutput
 }
 
-func detectLines(origImg gocv.Mat) []gocv.Mat {
-	toOutput := []gocv.Mat{}
+func detectLines(origImg gocv.Mat) []ImgAndReference {
 
 	blurred := gocv.NewMat()
 	gocv.Blur(origImg, &blurred, image.Point{X: 5, Y: 5})
@@ -147,8 +179,6 @@ func detectLines(origImg gocv.Mat) []gocv.Mat {
 	}
 	avgHeight := totalDeltaSum / (len(positions) - 1)
 
-	fmt.Println(positions)
-	fmt.Println(avgHeight)
 	if minPosition > avgHeight {
 		y := minPosition - avgHeight
 		//pt1 := image.Pt(0, y)
@@ -168,6 +198,7 @@ func detectLines(origImg gocv.Mat) []gocv.Mat {
 	if positions[0]-avgHeight > 0 {
 		start = positions[0] - avgHeight
 	}
+	toOutput := make([]ImgAndReference, 0, len(positions)+1)
 	for i := 0; i <= len(positions); i++ {
 		end := 0
 		if i == len(positions) {
@@ -181,13 +212,17 @@ func detectLines(origImg gocv.Mat) []gocv.Mat {
 				dest.SetUCharAt(r-start, c, origImg.GetUCharAt(r, c))
 			}
 		}
+		toOutput = append(toOutput, ImgAndReference{
+			mat:   dest,
+			origR: start,
+			origC: 0,
+			line:  i,
+		})
 		start = end
-		toOutput = append(toOutput, dest)
 	}
 	_ = finalBinaryImage.Close()
 
 	// TODO:
-	// - Chop up each line by each word with some more aggressive blur + contour detection
 	// - Pipe each word into a ML model: https://towardsdatascience.com/build-a-handwritten-text-recognition-system-using-tensorflow-2326a3487cd5 / https://github.com/githubharald/SimpleHTR
 
 	return toOutput
