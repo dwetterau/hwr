@@ -22,7 +22,8 @@ func main() {
 		panic("didn't load image")
 	}
 	//images := detectWords(origImg)
-	images := segmentLines(origImg)
+	// images := segmentLines(origImg)
+	images := detectLines(origImg)
 	i := 0
 	for {
 		toDraw := images[i%len(images)]
@@ -89,6 +90,55 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 	return []gocv.Mat{origImg, blurred, thresholded, dilated, final}
 }
 
+func detectLines(origImg gocv.Mat) []gocv.Mat {
+	blurred := gocv.NewMat()
+	gocv.Blur(origImg, &blurred, image.Point{X: 1, Y: 3})
+
+	thresholded := gocv.NewMat()
+	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 5, 2)
+
+	toOutput := []gocv.Mat{blurred, thresholded}
+
+	lines := gocv.NewMat()
+	gocv.HoughLines(thresholded, &lines, 0.5, math.Pi/180, 600)
+
+	fmt.Println(lines.Cols())
+	fmt.Println(lines.Rows())
+	for i := 0; i < lines.Rows(); i++ {
+		v := lines.GetVecfAt(i, 0)
+
+		rho := float64(v[0])
+		theta := float64(v[1])
+
+		eps := 0.5
+		if theta < (math.Pi/2)-eps || theta > (math.Pi/2)+eps {
+			continue
+		}
+
+		a := math.Cos(theta)
+		b := math.Sin(theta)
+		x0 := a * rho
+		y0 := b * rho
+		offset := float64(10000)
+		x1 := int(x0 + offset*(-b))
+		y1 := int(y0 + offset*a)
+		x2 := int(x0 - offset*(-b))
+		y2 := int(y0 - offset*a)
+
+		pt1 := image.Pt(x1, y1)
+		pt2 := image.Pt(x2, y2)
+		gocv.Line(&blurred, pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
+	}
+
+	// TODO:
+	// - Filter out lines that are close together, probably by using the valley methods we already have below.
+	// - Chop up the input by each line
+	// - Chop up each line by each word with some more aggressive blur + contour detection
+	// - Pipe each word into a ML model: https://towardsdatascience.com/build-a-handwritten-text-recognition-system-using-tensorflow-2326a3487cd5 / https://github.com/githubharald/SimpleHTR
+
+	return toOutput
+}
+
 const (
 	totalChunks    = 8
 	bigChunkChunks = 3
@@ -135,20 +185,18 @@ func addPrimesToVector(n int, probPrimes []int) {
 
 // Heavily inspired by: https://github.com/arthurflor23/text-segmentation/blob/master/src/imgproc/cpp/LineSegmentation.cpp
 func segmentLines(origImage gocv.Mat) []gocv.Mat {
-	toOutput := []gocv.Mat{origImage}
+	toOutput := []gocv.Mat{}
 	//
 	// Steps:
 	// Make it black or white
 	blurred := gocv.NewMat()
 	gocv.Blur(origImage, &blurred, image.Point{X: 5, Y: 5})
-	toOutput = append(toOutput, blurred)
 
 	thresholded := gocv.NewMat()
 	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 11, 11)
-	toOutput = append(toOutput, thresholded)
 
 	dilated := gocv.NewMat()
-	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 7, Y: 1})
+	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 9, Y: 1})
 	gocv.Dilate(thresholded, &dilated, dilationKernal)
 
 	invertedDilated := gocv.NewMat()
@@ -157,10 +205,11 @@ func segmentLines(origImage gocv.Mat) []gocv.Mat {
 	finalBinaryImage := invertedDilated
 	contours := getContours(finalBinaryImage)
 	toOutput = append(toOutput, origImage.Clone())
-	blue := color.RGBA{0, 0, 255, 0}
+	blue := color.RGBA{0, 0, 255, 255}
 	for _, c := range contours {
 		gocv.Rectangle(&toOutput[len(toOutput)-1], c, blue, 2)
 	}
+	return toOutput
 
 	// Generate chunks
 	bigChunk, allChunks := generateChunks(finalBinaryImage)
