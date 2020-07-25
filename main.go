@@ -24,6 +24,9 @@ func main() {
 	//images := detectWords(origImg)
 	// images := segmentLines(origImg)
 	images := detectLines(origImg)
+
+	images = detectWords(images[0])
+
 	i := 0
 	for {
 		toDraw := images[i%len(images)]
@@ -40,10 +43,10 @@ func main() {
 
 func detectWords(origImg gocv.Mat) []gocv.Mat {
 	blurred := gocv.NewMat()
-	gocv.Blur(origImg, &blurred, image.Point{X: 5, Y: 5})
+	gocv.Blur(origImg, &blurred, image.Point{X: 10, Y: 10})
 
 	thresholded := gocv.NewMat()
-	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 11, 15)
+	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 7, 4)
 
 	dilated := gocv.NewMat()
 	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 5, Y: 1})
@@ -75,7 +78,7 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 	for _, c := range contours {
 		r := gocv.BoundingRect(c)
 		s := r.Size()
-		if s.X*s.Y > 1000 {
+		if s.X*s.Y > 100 {
 			rectangles = append(rectangles, r)
 		}
 	}
@@ -91,48 +94,104 @@ func detectWords(origImg gocv.Mat) []gocv.Mat {
 }
 
 func detectLines(origImg gocv.Mat) []gocv.Mat {
+	toOutput := []gocv.Mat{}
+
 	blurred := gocv.NewMat()
-	gocv.Blur(origImg, &blurred, image.Point{X: 1, Y: 3})
+	gocv.Blur(origImg, &blurred, image.Point{X: 5, Y: 5})
 
 	thresholded := gocv.NewMat()
-	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 5, 2)
+	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 11, 11)
+	_ = blurred.Close()
 
-	toOutput := []gocv.Mat{blurred, thresholded}
+	dilated := gocv.NewMat()
+	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 9, Y: 1})
+	gocv.Dilate(thresholded, &dilated, dilationKernal)
+	_ = thresholded.Close()
 
-	lines := gocv.NewMat()
-	gocv.HoughLines(thresholded, &lines, 0.5, math.Pi/180, 600)
+	invertedDilated := gocv.NewMat()
+	gocv.BitwiseNot(dilated, &invertedDilated)
+	_ = dilated.Close()
 
-	fmt.Println(lines.Cols())
-	fmt.Println(lines.Rows())
-	for i := 0; i < lines.Rows(); i++ {
-		v := lines.GetVecfAt(i, 0)
+	finalBinaryImage := invertedDilated
 
-		rho := float64(v[0])
-		theta := float64(v[1])
+	// Generate chunks
+	bigChunk, _ := generateChunks(finalBinaryImage)
 
-		eps := 0.5
-		if theta < (math.Pi/2)-eps || theta > (math.Pi/2)+eps {
-			continue
-		}
+	// Get the initial lines
+	idToValleys := make(map[valleyID]*valleyStruct, 50)
+	bigChunk.findPeaksAndValleys(idToValleys)
+	positions := make([]int, 0, len(bigChunk.valleyIDs))
+	for _, valleyID := range bigChunk.valleyIDs {
+		v := idToValleys[valleyID]
 
-		a := math.Cos(theta)
-		b := math.Sin(theta)
-		x0 := a * rho
-		y0 := b * rho
-		offset := float64(10000)
-		x1 := int(x0 + offset*(-b))
-		y1 := int(y0 + offset*a)
-		x2 := int(x0 - offset*(-b))
-		y2 := int(y0 - offset*a)
+		y := v.position
+		positions = append(positions, y)
 
-		pt1 := image.Pt(x1, y1)
-		pt2 := image.Pt(x2, y2)
-		gocv.Line(&blurred, pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
+		//pt1 := image.Pt(0, y)
+		//pt2 := image.Pt(origImg.Cols(), y)
+		//gocv.Line(&toOutput[0], pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
 	}
 
+	sort.Slice(positions, func(i, j int) bool {
+		return positions[i] < positions[j]
+	})
+	// Add an above and below line for good measure
+	minPosition := positions[0]
+	maxPosition := positions[len(positions)-1]
+
+	totalDeltaSum := 0
+	for i := 1; i < len(positions); i++ {
+		totalDeltaSum += positions[i] - positions[i-1]
+	}
+	avgHeight := totalDeltaSum / (len(positions) - 1)
+
+	fmt.Println(positions)
+	fmt.Println(avgHeight)
+	if minPosition > avgHeight {
+		y := minPosition - avgHeight
+		//pt1 := image.Pt(0, y)
+		//pt2 := image.Pt(origImg.Cols(), y)
+		//gocv.Line(&toOutput[0], pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
+		positions = append([]int{y}, positions...)
+	}
+	if maxPosition+avgHeight < origImg.Rows() {
+		y := maxPosition + avgHeight
+		//pt1 := image.Pt(0, y)
+		//pt2 := image.Pt(origImg.Cols(), y)
+		//gocv.Line(&toOutput[0], pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
+		positions = append(positions, y)
+	}
+
+	// we make two regions for the alternating lines
+	odds := gocv.NewMatWithSize(origImg.Rows(), origImg.Cols(), origImg.Type())
+	evens := gocv.NewMatWithSize(origImg.Rows(), origImg.Cols(), origImg.Type())
+	toOutput = append(toOutput, evens, odds)
+
+	start := 0
+	for i := 0; i <= len(positions); i++ {
+		end := 0
+		if i == len(positions) {
+			end = origImg.Rows()
+		} else {
+			end = positions[i]
+		}
+		dest := odds
+		other := evens
+		if i%2 == 0 {
+			dest = evens
+			other = odds
+		}
+		for c := 0; c < origImg.Cols(); c++ {
+			for r := start; r < end; r++ {
+				dest.SetUCharAt(r, c, origImg.GetUCharAt(r, c))
+				other.SetUCharAt(r, c, uint8(255))
+			}
+		}
+		start = end
+	}
+	_ = finalBinaryImage.Close()
+
 	// TODO:
-	// - Filter out lines that are close together, probably by using the valley methods we already have below.
-	// - Chop up the input by each line
 	// - Chop up each line by each word with some more aggressive blur + contour detection
 	// - Pipe each word into a ML model: https://towardsdatascience.com/build-a-handwritten-text-recognition-system-using-tensorflow-2326a3487cd5 / https://github.com/githubharald/SimpleHTR
 
@@ -141,10 +200,10 @@ func detectLines(origImg gocv.Mat) []gocv.Mat {
 
 const (
 	totalChunks    = 8
-	bigChunkChunks = 3
+	bigChunkChunks = 8
 	valleyFactor   = .60
 	// I think this should be < width / totalChunks
-	minAvgHeight   = 80
+	minAvgHeight   = 60
 	blackThreshold = 0
 )
 
