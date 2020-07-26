@@ -21,7 +21,7 @@ import (
 func main() {
 	inputFolder := "/Users/davidw/Dropbox/Journal"
 	outputFolder := "/Users/davidw/Journal/Labels"
-	name := "2019-07-25.jpg"
+	name := "2019-07-23.jpg"
 	labelImage(name, inputFolder, outputFolder)
 }
 
@@ -95,7 +95,6 @@ func labelImage(name string, inputFolder, outputFolder string) {
 		panic("didn't load image")
 	}
 	lineImages := detectLines(origImg)
-	return
 
 	finalImages := make([]ImgAndReference, 0, len(lineImages)*10)
 	for _, i := range lineImages {
@@ -385,7 +384,6 @@ func detectLines(origImg gocv.Mat) []ImgAndReference {
 		gocv.Line(&origImg, pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
 		positions = append(positions, y)
 	}
-	renderImages([]gocv.Mat{finalBinaryImage, origImg})
 
 	start := 0
 	if positions[0]-avgHeight > 0 {
