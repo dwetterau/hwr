@@ -1,37 +1,134 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"image"
 	"image/color"
+	"io/ioutil"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
+	"sync"
 
 	"gocv.io/x/gocv"
 )
 
 func main() {
-	// open display window
-	window := gocv.NewWindow("HWR")
-	defer window.Close()
+	inputFolder := "/Users/davidw/Dropbox/Journal"
+	outputFolder := "/Users/davidw/Journal/Labels"
+	name := "2019-07-25.jpg"
+	labelImage(name, inputFolder, outputFolder)
+}
 
-	// prepare image matrix
-	origImg := gocv.IMRead("/home/david/Dropbox/Journal/2019-07-25.jpg", gocv.IMReadGrayScale)
+func labelFilePath(name, outputFolder string) string {
+	return filepath.Join(outputFolder, name[:len(name)-len(filepath.Ext(name))]+".csv")
+}
+
+// File format:
+// r,c,w,h,l,w,label
+func readLabelFile(name, outputFolder string) []ImgAndReference {
+	labelFile, err := ioutil.ReadFile(labelFilePath(name, outputFolder))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		panic(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(labelFile)), "\n")
+	existing := make([]ImgAndReference, 0, len(lines))
+	for _, l := range lines {
+		if len(l) == 0 {
+			continue
+		}
+		sl := strings.Split(l, ",")
+		mustParseIndex := func(i int) int {
+			num, err := strconv.ParseInt(sl[i], 10, 64)
+			if err != nil {
+				panic(err)
+			}
+			return int(num)
+		}
+
+		existing = append(existing, ImgAndReference{
+			origR:    mustParseIndex(0),
+			origC:    mustParseIndex(1),
+			width:    mustParseIndex(2),
+			height:   mustParseIndex(3),
+			line:     mustParseIndex(4),
+			word:     mustParseIndex(5),
+			label:    strings.Join(sl[6:], ","),
+			hasLabel: true,
+		})
+	}
+	return existing
+}
+
+func saveLabels(name, outputFolder string, labels []ImgAndReference) {
+	lines := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if !l.hasLabel {
+			continue
+		}
+		lines = append(lines, l.csvLine())
+	}
+	err := ioutil.WriteFile(
+		labelFilePath(name, outputFolder),
+		[]byte(strings.Join(lines, "\n")),
+		0666,
+	)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func labelImage(name string, inputFolder, outputFolder string) {
+	existingLabels := readLabelFile(name, outputFolder)
+
+	origImg := gocv.IMRead(filepath.Join(inputFolder, name), gocv.IMReadGrayScale)
 	defer origImg.Close()
 	if origImg.Empty() {
 		panic("didn't load image")
 	}
-	images := detectLines(origImg)
+	lineImages := detectLines(origImg)
 
-	finalImages := make([]ImgAndReference, 0, len(images)*10)
-	for _, i := range images {
+	finalImages := make([]ImgAndReference, 0, len(lineImages)*10)
+	for _, i := range lineImages {
 		finalImages = append(finalImages, detectWords(i)...)
 	}
-	images = finalImages
 
-	i := 0
-	for {
-		toDraw := images[i%len(images)]
+	// Fill in any existing labels
+	for i, word := range finalImages {
+		if i < len(existingLabels) {
+			if existingLabels[i].line != word.line {
+				continue
+			}
+			if existingLabels[i].word != word.word {
+				continue
+			}
+			finalImages[i].label = existingLabels[i].label
+			finalImages[i].hasLabel = true
+		} else {
+		}
+	}
+
+	// open display window
+	window := gocv.NewWindow("HWR")
+	defer window.Close()
+
+	firstUnlabeled := 0
+	for j, i := range finalImages {
+		if !i.hasLabel {
+			firstUnlabeled = j
+			break
+		}
+	}
+	for firstUnlabeled < len(finalImages) {
+		toDraw := finalImages[firstUnlabeled]
+		fmt.Printf("Labeling %d,%d - %t: %s\n", toDraw.line, toDraw.word, toDraw.hasLabel, toDraw.label)
 
 		c := origImg.Clone()
 		gocv.Rectangle(&c, image.Rect(
@@ -41,23 +138,94 @@ func main() {
 			toDraw.origR+toDraw.mat.Rows(),
 		), color.RGBA{0, 0, 255, 0}, 3)
 
+		m := sync.Mutex{}
+		running := true
+		go func() {
+			scanner := bufio.NewScanner(os.Stdin)
+			if scanner.Scan() {
+				t := scanner.Text()
+				m.Lock()
+				r := running
+				m.Unlock()
+				if r {
+					finalImages[firstUnlabeled].label = t
+					finalImages[firstUnlabeled].hasLabel = true
+					m.Lock()
+					running = false
+					m.Unlock()
+				} else {
+					fmt.Println("Dropping input..")
+				}
+			}
+		}()
 		window.IMShow(c)
-		if window.WaitKey(100) == 27 {
-			break
+		shouldStop := false
+		for {
+			m.Lock()
+			r := running
+			m.Unlock()
+			if !r {
+				break
+			}
+			key := window.WaitKey(100)
+			if key == 27 {
+				fmt.Println("exit pressed, stopping early")
+				m.Lock()
+				running = false
+				m.Unlock()
+				shouldStop = true
+				break
+			}
+			// prev
+			if key == 2 {
+				m.Lock()
+				running = false
+				m.Unlock()
+				firstUnlabeled -= 2
+				fmt.Println("waiting to drop input..")
+				break
+			}
+			// next
+			if key == 3 {
+				m.Lock()
+				running = false
+				m.Unlock()
+				fmt.Println("waiting to drop input..")
+				break
+			}
 		}
 		_ = c.Close()
-		i++
+		if shouldStop {
+			break
+		}
+		firstUnlabeled++
 	}
-	for _, i := range images {
+	for _, i := range finalImages {
 		_ = i.mat.Close()
 	}
+	saveLabels(name, outputFolder, finalImages)
 }
 
 type ImgAndReference struct {
-	mat          gocv.Mat
-	origR, origC int
-	line, word   int
-	label        string
+	mat           gocv.Mat
+	origR, origC  int
+	width, height int
+	line, word    int
+	label         string
+	hasLabel      bool
+}
+
+func (i ImgAndReference) csvLine() string {
+	return fmt.Sprintf(
+		"%d,%d,%d,%d,%d,%d,%s",
+		i.origR,
+		i.origC,
+		i.width,
+		i.height,
+		i.line,
+		i.word,
+		i.label,
+	)
 }
 
 func detectWords(orig ImgAndReference) []ImgAndReference {
@@ -117,12 +285,14 @@ func detectWords(orig ImgAndReference) []ImgAndReference {
 			}
 		}
 		toOutput[i] = ImgAndReference{
-			mat:   mat,
-			origR: orig.origR + rect.Min.Y,
-			origC: orig.origC + rect.Min.X,
-			line:  orig.line,
-			word:  i,
-			label: "",
+			mat:    mat,
+			origR:  orig.origR + rect.Min.Y,
+			origC:  orig.origC + rect.Min.X,
+			width:  mat.Cols(),
+			height: mat.Rows(),
+			line:   orig.line,
+			word:   i,
+			label:  "",
 		}
 	}
 	return toOutput
@@ -213,10 +383,12 @@ func detectLines(origImg gocv.Mat) []ImgAndReference {
 			}
 		}
 		toOutput = append(toOutput, ImgAndReference{
-			mat:   dest,
-			origR: start,
-			origC: 0,
-			line:  i,
+			mat:    dest,
+			origR:  start,
+			origC:  0,
+			width:  dest.Cols(),
+			height: dest.Rows(),
+			line:   i,
 		})
 		start = end
 	}
