@@ -352,9 +352,9 @@ func detectLines(origImg gocv.Mat) []ImgAndReference {
 		y := v.position
 		positions = append(positions, y)
 
-		pt1 := image.Pt(0, y)
-		pt2 := image.Pt(origImg.Cols(), y)
-		gocv.Line(&origImg, pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
+		//pt1 := image.Pt(0, y)
+		//pt2 := image.Pt(origImg.Cols(), y)
+		//gocv.Line(&origImg, pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
 	}
 
 	sort.Slice(positions, func(i, j int) bool {
@@ -372,16 +372,16 @@ func detectLines(origImg gocv.Mat) []ImgAndReference {
 
 	if minPosition > avgHeight {
 		y := minPosition - avgHeight
-		pt1 := image.Pt(0, y)
-		pt2 := image.Pt(origImg.Cols(), y)
-		gocv.Line(&origImg, pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
+		//pt1 := image.Pt(0, y)
+		//pt2 := image.Pt(origImg.Cols(), y)
+		//gocv.Line(&origImg, pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
 		positions = append([]int{y}, positions...)
 	}
 	if maxPosition+avgHeight < origImg.Rows() {
 		y := maxPosition + avgHeight
-		pt1 := image.Pt(0, y)
-		pt2 := image.Pt(origImg.Cols(), y)
-		gocv.Line(&origImg, pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
+		//pt1 := image.Pt(0, y)
+		//pt2 := image.Pt(origImg.Cols(), y)
+		//gocv.Line(&origImg, pt1, pt2, color.RGBA{0, 255, 0, 50}, 3)
 		positions = append(positions, y)
 	}
 
