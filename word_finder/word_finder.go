@@ -1,236 +1,39 @@
-package main
+package word_finder
 
 import (
-	"bufio"
-	"fmt"
+	"errors"
 	"image"
-	"image/color"
-	"io/ioutil"
-	"os"
-	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
-	"sync"
 
 	"gocv.io/x/gocv"
 )
 
 // TODO:
 // - Pipe each word into a ML model: https://towardsdatascience.com/build-a-handwritten-text-recognition-system-using-tensorflow-2326a3487cd5 / https://github.com/githubharald/SimpleHTR
-func main() {
-	inputFolder := "/Users/davidw/Dropbox/Journal"
-	outputFolder := "/Users/davidw/Journal/Labels"
-	name := "2019-07-23.jpg"
-	labelImage(name, inputFolder, outputFolder)
+
+type ImgAndReference struct {
+	Mat           gocv.Mat
+	OrigR, OrigC  int
+	Width, Height int
+	Line, Word    int
 }
 
-func labelFilePath(name, outputFolder string) string {
-	return filepath.Join(outputFolder, name[:len(name)-len(filepath.Ext(name))]+".csv")
-}
-
-// File format:
-// r,c,w,h,l,w,label
-func readLabelFile(name, outputFolder string) []ImgAndReference {
-	labelFile, err := ioutil.ReadFile(labelFilePath(name, outputFolder))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		panic(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(labelFile)), "\n")
-	existing := make([]ImgAndReference, 0, len(lines))
-	for _, l := range lines {
-		if len(l) == 0 {
-			continue
-		}
-		sl := strings.Split(l, ",")
-		mustParseIndex := func(i int) int {
-			num, err := strconv.ParseInt(sl[i], 10, 64)
-			if err != nil {
-				panic(err)
-			}
-			return int(num)
-		}
-
-		existing = append(existing, ImgAndReference{
-			origR:    mustParseIndex(0),
-			origC:    mustParseIndex(1),
-			width:    mustParseIndex(2),
-			height:   mustParseIndex(3),
-			line:     mustParseIndex(4),
-			word:     mustParseIndex(5),
-			label:    strings.Join(sl[6:], ","),
-			hasLabel: true,
-		})
-	}
-	return existing
-}
-
-func saveLabels(name, outputFolder string, labels []ImgAndReference) {
-	lines := make([]string, 0, len(labels))
-	for _, l := range labels {
-		if !l.hasLabel {
-			continue
-		}
-		lines = append(lines, l.csvLine())
-	}
-	err := ioutil.WriteFile(
-		labelFilePath(name, outputFolder),
-		[]byte(strings.Join(lines, "\n")),
-		0666,
-	)
-	if err != nil {
-		panic(err)
-	}
-}
-
-func labelImage(name string, inputFolder, outputFolder string) {
-	existingLabels := readLabelFile(name, outputFolder)
-
-	origImg := gocv.IMRead(filepath.Join(inputFolder, name), gocv.IMReadGrayScale)
-	defer origImg.Close()
+func Find(imgFilename string) ([]ImgAndReference, error) {
+	origImg := gocv.IMRead(imgFilename, gocv.IMReadGrayScale)
 	if origImg.Empty() {
-		panic("didn't load image")
+		return nil, errors.New("didn't load image")
 	}
 	lineImages := detectLines(origImg)
 
 	finalImages := make([]ImgAndReference, 0, len(lineImages)*10)
 	for _, i := range lineImages {
-		finalImages = append(finalImages, detectWords(i)...)
+		finalImages = append(finalImages, detectWordsInternal(i)...)
 	}
-
-	// Fill in any existing labels
-	for i, word := range finalImages {
-		if i < len(existingLabels) {
-			if existingLabels[i].line != word.line {
-				continue
-			}
-			if existingLabels[i].word != word.word {
-				continue
-			}
-			finalImages[i].label = existingLabels[i].label
-			finalImages[i].hasLabel = true
-		} else {
-		}
-	}
-
-	// open display window
-	window := gocv.NewWindow("HWR")
-	defer window.Close()
-
-	firstUnlabeled := 0
-	for j, i := range finalImages {
-		if !i.hasLabel {
-			firstUnlabeled = j
-			break
-		}
-	}
-	for firstUnlabeled < len(finalImages) {
-		toDraw := finalImages[firstUnlabeled]
-		fmt.Printf("Labeling %d,%d - %t: %s\n", toDraw.line, toDraw.word, toDraw.hasLabel, toDraw.label)
-
-		c := origImg.Clone()
-		gocv.Rectangle(&c, image.Rect(
-			toDraw.origC,
-			toDraw.origR,
-			toDraw.origC+toDraw.mat.Cols(),
-			toDraw.origR+toDraw.mat.Rows(),
-		), color.RGBA{0, 0, 255, 0}, 3)
-
-		m := sync.Mutex{}
-		running := true
-		go func() {
-			scanner := bufio.NewScanner(os.Stdin)
-			if scanner.Scan() {
-				t := scanner.Text()
-				m.Lock()
-				r := running
-				m.Unlock()
-				if r {
-					finalImages[firstUnlabeled].label = t
-					finalImages[firstUnlabeled].hasLabel = true
-					m.Lock()
-					running = false
-					m.Unlock()
-				} else {
-					fmt.Println("Dropping input..")
-				}
-			}
-		}()
-		window.IMShow(c)
-		shouldStop := false
-		for {
-			m.Lock()
-			r := running
-			m.Unlock()
-			if !r {
-				break
-			}
-			key := window.WaitKey(100)
-			if key == 27 {
-				fmt.Println("exit pressed, stopping early")
-				m.Lock()
-				running = false
-				m.Unlock()
-				shouldStop = true
-				break
-			}
-			// prev
-			if key == 2 {
-				m.Lock()
-				running = false
-				m.Unlock()
-				firstUnlabeled -= 2
-				fmt.Println("waiting to drop input..")
-				break
-			}
-			// next
-			if key == 3 {
-				m.Lock()
-				running = false
-				m.Unlock()
-				fmt.Println("waiting to drop input..")
-				break
-			}
-		}
-		_ = c.Close()
-		if shouldStop {
-			break
-		}
-		firstUnlabeled++
-	}
-	for _, i := range finalImages {
-		_ = i.mat.Close()
-	}
-	saveLabels(name, outputFolder, finalImages)
+	return finalImages, origImg.Close()
 }
 
-type ImgAndReference struct {
-	mat           gocv.Mat
-	origR, origC  int
-	width, height int
-	line, word    int
-	label         string
-	hasLabel      bool
-}
-
-func (i ImgAndReference) csvLine() string {
-	return fmt.Sprintf(
-		"%d,%d,%d,%d,%d,%d,%s",
-		i.origR,
-		i.origC,
-		i.width,
-		i.height,
-		i.line,
-		i.word,
-		i.label,
-	)
-}
-
-func detectWords(orig ImgAndReference) []ImgAndReference {
-	origImg := orig.mat
+func detectWordsInternal(orig ImgAndReference) []ImgAndReference {
+	origImg := orig.Mat
 	blurred := gocv.NewMat()
 	gocv.Blur(origImg, &blurred, image.Point{X: 5, Y: 5})
 
@@ -286,32 +89,16 @@ func detectWords(orig ImgAndReference) []ImgAndReference {
 			}
 		}
 		toOutput[i] = ImgAndReference{
-			mat:    mat,
-			origR:  orig.origR + rect.Min.Y,
-			origC:  orig.origC + rect.Min.X,
-			width:  mat.Cols(),
-			height: mat.Rows(),
-			line:   orig.line,
-			word:   i,
-			label:  "",
+			Mat:    mat,
+			OrigR:  orig.OrigR + rect.Min.Y,
+			OrigC:  orig.OrigC + rect.Min.X,
+			Width:  mat.Cols(),
+			Height: mat.Rows(),
+			Line:   orig.Line,
+			Word:   i,
 		}
 	}
 	return toOutput
-}
-
-func renderImages(images []gocv.Mat) {
-	window := gocv.NewWindow("Debug")
-	defer window.Close()
-
-	i := 0
-	for {
-		window.IMShow(images[i%len(images)])
-		key := window.WaitKey(1000)
-		if key == 27 {
-			break
-		}
-		i++
-	}
 }
 
 func detectLines(origImg gocv.Mat) []ImgAndReference {
@@ -321,16 +108,16 @@ func detectLines(origImg gocv.Mat) []ImgAndReference {
 
 	thresholded := gocv.NewMat()
 	gocv.AdaptiveThreshold(blurred, &thresholded, 255, gocv.AdaptiveThresholdGaussian, gocv.ThresholdBinaryInv, 11, 11)
-	// _ = blurred.Close()
+	_ = blurred.Close()
 
 	dilated := gocv.NewMat()
 	dilationKernal := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 9, Y: 1})
 	gocv.Dilate(thresholded, &dilated, dilationKernal)
-	// _ = thresholded.Close()
+	_ = thresholded.Close()
 
 	invertedDilated := gocv.NewMat()
 	gocv.BitwiseNot(dilated, &invertedDilated)
-	// _ = dilated.Close()
+	_ = dilated.Close()
 
 	finalBinaryImage := invertedDilated
 
@@ -343,7 +130,6 @@ func detectLines(origImg gocv.Mat) []ImgAndReference {
 	}
 
 	// Get the initial lines
-	idToValleys := make(map[valleyID]*valleyStruct, 50)
 	bigChunk.findPeaksAndValleys(idToValleys)
 	positions := make([]int, 0, len(bigChunk.valleyIDs))
 	for _, valleyID := range bigChunk.valleyIDs {
@@ -404,12 +190,12 @@ func detectLines(origImg gocv.Mat) []ImgAndReference {
 			}
 		}
 		toOutput = append(toOutput, ImgAndReference{
-			mat:    dest,
-			origR:  start,
-			origC:  0,
-			width:  dest.Cols(),
-			height: dest.Rows(),
-			line:   i,
+			Mat:    dest,
+			OrigR:  start,
+			OrigC:  0,
+			Width:  dest.Cols(),
+			Height: dest.Rows(),
+			Line:   i,
 		})
 		start = end
 	}
@@ -425,39 +211,6 @@ const (
 )
 
 type valleyID int
-
-var (
-	valleyIDCounter = valleyID(0)
-
-	notPrimesArray []bool
-	primes         []int
-)
-
-func init() {
-	/*
-		primes := make([]int, 0, 100)
-		notPrimesArray = make([]bool, 10000)
-		notPrimesArray[0] = true
-		notPrimesArray[1] = true
-		for i := 2; i < len(notPrimesArray); i++ {
-			if notPrimesArray[i] {
-				continue
-			}
-			primes = append(primes, i)
-			for j := i * 2; j < len(notPrimesArray); j += i {
-				notPrimesArray[j] = true
-			}
-		}*/
-}
-
-func addPrimesToVector(n int, probPrimes []int) {
-	for i := 0; i < len(primes); i++ {
-		for n%primes[i] != 0 {
-			n /= primes[i]
-			probPrimes[i]++
-		}
-	}
-}
 
 type chunkStruct struct {
 	index      int
@@ -488,7 +241,9 @@ func (c *chunkStruct) avgHeight() int {
 	return guess
 }
 
-func (c *chunkStruct) findPeaksAndValleys(idToValley map[valleyID]*valleyStruct) {
+func (c *chunkStruct) findPeaksAndValleys() map[valleyID]*valleyStruct {
+	valleyIDCounter = valleyID(0)
+	idToValley := make(map[valleyID]*valleyStruct, 50)
 	c.calculateHistogram()
 
 	for i := 1; i < len(c.histogram)-1; i++ {
@@ -574,6 +329,7 @@ func (c *chunkStruct) findPeaksAndValleys(idToValley map[valleyID]*valleyStruct)
 		c.valleyIDs = append(c.valleyIDs, v.id)
 		idToValley[v.id] = v
 	}
+	return idToValley
 }
 
 func (c *chunkStruct) calculateHistogram() {
@@ -592,10 +348,6 @@ type valleyStruct struct {
 	chunkIndex int
 	position   int
 	used       bool
-}
-
-func (v *valleyStruct) isSame(v2 *valleyStruct) bool {
-	return v.id == v2.id
 }
 
 type peakStruct struct {
