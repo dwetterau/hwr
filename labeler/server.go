@@ -16,7 +16,7 @@ import (
 func main() {
 	inputFolder := "/home/david/Dropbox/Journal"
 	outputFolder := "/home/david/Dropbox/Journal/Labels"
-	name := "2019-07-24.jpg"
+	name := "2019-07-22.jpg"
 
 	l, err := NewLabeler(name, inputFolder, outputFolder)
 	if err != nil {
@@ -25,10 +25,10 @@ func main() {
 
 	indexTmpl := template.Must(template.ParseFiles("./index.html"))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		possibleID := path.Base(r.URL.Path)
 		firstUnlabeled := l.FirstUnlabeled()
+		possibleID := path.Base(r.URL.Path)
 		var curIdx int
-		if len(possibleID) > 0 {
+		if possibleID != "/" && len(possibleID) > 0 {
 			var err error
 			var curIdxRaw int64
 			curIdxRaw, err = strconv.ParseInt(possibleID, 10, 64)
@@ -56,6 +56,7 @@ func main() {
 			HasUnlabeled:      firstUnlabeled != -1,
 			FirstUnlabeledIdx: firstUnlabeled,
 			TotalWords:        l.Len(),
+			NumUnlabeled:      l.NumUnlabeled(),
 			NextIdx:           curIdx + 1,
 			PrevIdx:           prevIdx,
 			CurImageIdx:       curIdx,
@@ -65,7 +66,8 @@ func main() {
 
 		err = indexTmpl.Execute(w, data)
 		if err != nil {
-			_ = fmt.Errorf("error executing template, %s", err.Error())
+			http.Error(w, errors.Wrap(err, "error executing template").Error(), 500)
+			return
 		}
 	})
 	http.HandleFunc("/word/", func(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +159,7 @@ type IndexData struct {
 	HasUnlabeled      bool
 	FirstUnlabeledIdx int
 	TotalWords        int
+	NumUnlabeled      int
 	NextIdx           int
 	PrevIdx           int
 

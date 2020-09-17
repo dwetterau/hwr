@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"github.com/pkg/errors"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -10,12 +9,14 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pkg/errors"
+
 	"github.com/dwetterau/hwr/word_finder"
 )
 
 type Labeler struct {
-	name        string
-	allWords    []ImgAndLabel
+	name     string
+	allWords []ImgAndLabel
 
 	sync.Mutex
 }
@@ -45,13 +46,26 @@ func NewLabeler(name string, inputFolder, outputFolder string) (*Labeler, error)
 		}
 	}
 	return &Labeler{
-		name:        name,
-		allWords:    finalImages,
+		name:     name,
+		allWords: finalImages,
 	}, nil
 }
 
 func (l *Labeler) Len() int {
 	return len(l.allWords)
+}
+
+func (l *Labeler) NumUnlabeled() int {
+	l.Lock()
+	defer l.Unlock()
+
+	n := 0
+	for _, w := range l.allWords {
+		if !w.hasLabel {
+			n++
+		}
+	}
+	return n
 }
 
 // Returns -1 if no unlabeled image is found
