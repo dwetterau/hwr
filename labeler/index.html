@@ -1,3 +1,27 @@
 <html lang="en">
 <h1>Hello world</h1>
+
+{{if .HasUnlabeled }}
+    <div>Still has unlabeled images</div>
+    <div><a href="/{{.FirstUnlabeled}}">Next Unlabeled</a></div>
+{{else}}
+    <form action="/save_all">
+        <input type="submit" value="Save and Close" />
+    </form>
+{{end}}
+<div>Current Word Index: {{.CurImageIdx}}. {{.TotalWords}} total.</div>
+<div>
+    <a href="/{{.PrevIdx}}">Prev Word</a>
+    <a href="/{{.NextIdx}}">Next Word</a>
+</div>
+
+<img src="{{.CurImageURL}}" alt="The current unlabeled word">
+<form action="/save_label">
+    <label for="label">
+        Label:
+        <input name="label" type="text" autofocus />
+    </label>
+    <input type="hidden" name="idx" value="{{.CurImageIdx}}">
+    <input type="submit" value="Label" />
+</form>
 </html>

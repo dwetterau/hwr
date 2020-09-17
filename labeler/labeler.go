@@ -16,7 +16,6 @@ import (
 type Labeler struct {
 	name        string
 	allWords    []ImgAndLabel
-	currentWord int
 
 	sync.Mutex
 }
@@ -45,39 +44,47 @@ func NewLabeler(name string, inputFolder, outputFolder string) (*Labeler, error)
 			finalImages[i].hasLabel = true
 		}
 	}
-	firstUnlabeled := 0
-	for j, i := range finalImages {
-		if !i.hasLabel {
-			firstUnlabeled = j
-			break
-		}
-	}
 	return &Labeler{
 		name:        name,
 		allWords:    finalImages,
-		currentWord: firstUnlabeled,
 	}, nil
 }
 
-func (l *Labeler) LabelWord(label string) error {
-	l.Lock()
-	defer l.Unlock()
-
-	if l.currentWord > len(l.allWords) {
-		return errors.New(fmt.Sprintf("invalid current word: %d", l.currentWord))
-	}
-	l.allWords[l.currentWord].hasLabel = true
-	l.allWords[l.currentWord].label = label
-	l.currentWord++
-	return nil
+func (l *Labeler) Len() int {
+	return len(l.allWords)
 }
 
-func (l *Labeler) previousWord() {
+// Returns -1 if no unlabeled image is found
+func (l *Labeler) FirstUnlabeled() int {
 	l.Lock()
 	defer l.Unlock()
-	if l.currentWord > 0 {
-		l.currentWord--
+	for i, img := range l.allWords {
+		if !img.hasLabel {
+			return i
+		}
 	}
+	return -1
+}
+
+func (l *Labeler) Image(i int) (ImgAndLabel, error) {
+	l.Lock()
+	defer l.Unlock()
+	if i > len(l.allWords) {
+		return ImgAndLabel{}, errors.New(fmt.Sprintf("invalid current word: %d", i))
+	}
+	return l.allWords[i], nil
+}
+
+func (l *Labeler) LabelWord(i int, label string) error {
+	l.Lock()
+	defer l.Unlock()
+
+	if i > len(l.allWords) {
+		return errors.New(fmt.Sprintf("invalid current word: %d", i))
+	}
+	l.allWords[i].hasLabel = true
+	l.allWords[i].label = label
+	return nil
 }
 
 func (l *Labeler) SaveAndClose(outputFolder string) error {

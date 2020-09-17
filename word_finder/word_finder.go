@@ -130,7 +130,7 @@ func detectLines(origImg gocv.Mat) []ImgAndReference {
 	}
 
 	// Get the initial lines
-	bigChunk.findPeaksAndValleys(idToValleys)
+	idToValleys := bigChunk.findPeaksAndValleys()
 	positions := make([]int, 0, len(bigChunk.valleyIDs))
 	for _, valleyID := range bigChunk.valleyIDs {
 		v := idToValleys[valleyID]
@@ -242,7 +242,7 @@ func (c *chunkStruct) avgHeight() int {
 }
 
 func (c *chunkStruct) findPeaksAndValleys() map[valleyID]*valleyStruct {
-	valleyIDCounter = valleyID(0)
+	valleyIDCounter := valleyID(0)
 	idToValley := make(map[valleyID]*valleyStruct, 50)
 	c.calculateHistogram()
 
